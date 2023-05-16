@@ -1,0 +1,7 @@
+name = "USydClusters"
+uuid = "0d53aa51-fded-4285-958f-a79747f7b7b4"
+authors = ["brendanjohnharris <brendanjohnharris@gmail.com> and contributors"]
+version = "1.0.0-DEV"
+
+[compat]
+julia = "1.6"

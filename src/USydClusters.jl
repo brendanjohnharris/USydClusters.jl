@@ -1,5 +1,6 @@
 module USydClusters
 
-# Write your package code here.
+include("Physics.jl")
+include("RemotePhysics.jl")
 
 end

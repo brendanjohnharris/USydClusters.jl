@@ -3,5 +3,8 @@ uuid = "0d53aa51-fded-4285-958f-a79747f7b7b4"
 authors = ["brendanjohnharris <brendanjohnharris@gmail.com> and contributors"]
 version = "1.0.0-DEV"
 
+[deps]
+ClusterManagers = "34f1f09b-3a8b-5176-ab39-66d58a4d544e"
+
 [compat]
 julia = "1.6"

@@ -14,7 +14,7 @@ struct PBSProManager <: ClusterManager
     queue
     prequel
 end
-PBSProManager(np, ncpus, mem, walltime, queue) = PBSProManager(np, ncpus, mem, walltime, queue, ``)
+PBSProManager(np, ncpus, mem, walltime, queue; kwargs...) = PBSProManager(np, ncpus, mem, walltime, queue, ``; kwargs...)
 
 function ClusterManagers.launch(manager::PBSProManager,
         params::Dict, instances_arr::Array, c::Condition)
@@ -116,9 +116,9 @@ function ClusterManagers.kill(manager::PBSProManager, id::Int64, config::WorkerC
     end
 end
 
-addprocs(np::Integer, ncpus, mem, walltime; qsub_flags=``, kwargs...) = ClusterManagers.addprocs(PBSProManager(np, ncpus, mem, walltime, qsub_flags); kwargs...)
+addprocs(np::Integer, ncpus, mem, walltime; qsub_flags=``, kwargs...) = ClusterManagers.addprocs(PBSProManager(np, ncpus, mem, walltime, qsub_flags); enable_threaded_blas=true, kwargs...)
 
 function addprocs(np::Integer; ncpus=12, mem=31, walltime=48, qsub_flags=``, kwargs...)
-    ClusterManagers.addprocs(PBSProManager(np, ncpus, mem, walltime, qsub_flags); kwargs...)
+    ClusterManagers.addprocs(PBSProManager(np, ncpus, mem, walltime, qsub_flags); enable_threaded_blas=true, kwargs...)
 end
 end # module

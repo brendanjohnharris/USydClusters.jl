@@ -12,7 +12,7 @@ struct PBSProManager <: ClusterManager
     mem::Integer # GB
     walltime::Integer # Hours
     queue
-    prequel
+    project
 end
 PBSProManager(np, ncpus, mem, walltime, queue; kwargs...) = PBSProManager(np, ncpus, mem, walltime, queue, ``; kwargs...)
 
@@ -20,6 +20,7 @@ function ClusterManagers.launch(manager::PBSProManager,
         params::Dict, instances_arr::Array, c::Condition)
     try
         home = ENV["HOME"]
+        jobdir = home * "/jobs"
         dir = params[:dir]
         exename = params[:exename]
         exeflags = params[:exeflags]
@@ -30,27 +31,34 @@ function ClusterManagers.launch(manager::PBSProManager,
         mem = manager.mem
         walltime = manager.walltime
         queue = manager.queue
-        prequel = manager.prequel
+        project = manager.project
 
         jobname = `julia-$(getpid())`
 
-        Jcmd = np > 1 ? `-J 1-$np` : ()
-        if isempty(prequel)
-            prequel = `` # It's something
+        Jcmd = np > 1 ? `-J 1-$np` : ``
+        if isempty(project)
+            project = "/headnode2/bhar9988/code/DDC/AllenAttention.jl/" # `@.`
         end
         cmd = """#!/bin/bash
-        $(Base.shell_escape(prequel))
+        #PBS -N $(Base.shell_escape(jobname))
+        #PBS -V
+        #PBS -j oe
+        #PBS -m ae
+        #PBS -M bhar9988@uni.sydney.edu.au
+        #PBS $(Base.shell_escape(Jcmd))
+        #PBS -l select=1:ncpus=$((ncpus)):mem=$(mem)GB
+        #PBS -l walltime=$((walltime)):00:00 $(Base.shell_escape(queue))
         cd $dir
         source /headnode2/bhar9988/.bashrc
         export JULIA_WORKER_TIMEOUT=360
-        export JULIA_CONDAPKG_OFFLINE=yes
-        export JULIA_PYTHONCALL_EXE="@PyCall"
-        export JULIA_CONDAPKG_BACKEND="Null"
-        $(Base.shell_escape(exename)) -t auto --project=/home/bhar9988/code/AllenAttention.jl/ $(Base.shell_escape(exeflags)) $(Base.shell_escape(ClusterManagers.worker_arg())) 2>&1 | tee ~/jobs/julia_subprocess_$jobname.log"""
-        f = tempname(); write(f, cmd)
+        $(Base.shell_escape(exename)) -t auto --project=$project $(Base.shell_escape(exeflags)) $(Base.shell_escape(ClusterManagers.worker_arg())) 2>&1 | tee ~/jobs/\${PBS_JOBID}.log"""
+        f = tempname(jobdir);
+        write(f, cmd)
         # qsub_cmd = pipeline(`echo $(Base.shell_escape(cmd))`, `qsub -N $jobname -V -j oe -k o -m ae -M bhar9988@uni.sydney.edu.au $Jcmd -l select=1:ncpus=$(ncpus):mem=$(mem)GB -l walltime=$(walltime):00:00 $queue`)
         @debug(cmd)
-        qsub_cmd = pipeline(`qsub -N $jobname -V -j oe -k o -m ae -M bhar9988@uni.sydney.edu.au $Jcmd -l select=1:ncpus=$(ncpus):mem=$(mem)GB -l walltime=$(walltime):00:00 $queue $f`)
+        mkpath(jobdir)
+        qsub = "source ~/.cshrc && qsub $(Base.shell_escape(f))"
+        qsub_cmd = pipeline(`ssh headnode "$qsub"`)
         @debug qsub_cmd
         out = open(qsub_cmd)
         @debug out
@@ -66,9 +74,9 @@ function ClusterManagers.launch(manager::PBSProManager,
 
         function filenames(i)
             if np > 1
-                ["$home/julia-$(getpid()).o$id-$i","$home/julia-$(getpid())-$i.o$id","$home/julia-$(getpid()).o$id.$i"]
+                ["$jobdir/$id[$i].headnode.log"]
             else
-                ["$home/julia-$(getpid()).o$id"]
+                ["$jobdir/$id.headnode.log"]
             end
         end
 
@@ -95,7 +103,9 @@ function ClusterManagers.launch(manager::PBSProManager,
             push!(instances_arr, config)
             notify(c)
         end
+        rm(f, force=true)
         println("Running.")
+
 
     catch e
         println("Error launching workers")
@@ -118,7 +128,7 @@ end
 
 addprocs(np::Integer, ncpus, mem, walltime; qsub_flags=``, kwargs...) = ClusterManagers.addprocs(PBSProManager(np, ncpus, mem, walltime, qsub_flags); enable_threaded_blas=true, kwargs...)
 
-function addprocs(np::Integer; ncpus=12, mem=31, walltime=48, qsub_flags=``, kwargs...)
+function addprocs(np::Integer; ncpus=10, mem=31, walltime=48, qsub_flags=``, kwargs...)
     ClusterManagers.addprocs(PBSProManager(np, ncpus, mem, walltime, qsub_flags); enable_threaded_blas=true, kwargs...)
 end
 end # module

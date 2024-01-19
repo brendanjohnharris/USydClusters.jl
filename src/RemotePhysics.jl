@@ -14,6 +14,7 @@ struct PBSProManager <: ClusterManager
     queue
     prequel
 end
+
 PBSProManager(np, ncpus, mem, walltime, queue) = PBSProManager(np, ncpus, mem, walltime, queue, ``)
 
 function ClusterManagers.launch(manager::PBSProManager,

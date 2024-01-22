@@ -39,7 +39,7 @@ function ClusterManagers.launch(manager::PBSProManager,
 
         Jcmd = np > 1 ? `-J 1-$np` : ``
         if isempty(project)
-            project = "/headnode2/bhar9988/code/DDC/AllenAttention.jl/" # `@.`
+            project = dirname(Base.active_project())
         end
         cmd = """#!/bin/bash
         #PBS -N $(Base.shell_escape(jobname))

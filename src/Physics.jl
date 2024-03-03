@@ -1,5 +1,6 @@
 
 module Physics
+using Distributed
 using ClusterManagers
 import ClusterManagers.worker_arg
 import ClusterManagers.ClusterManager
@@ -46,6 +47,7 @@ function ClusterManagers.launch(manager::PBSProManager,
         #PBS -V
         #PBS -j oe
         #PBS -m ae
+        #PBS -o $(jobdir)/$(Base.shell_escape(jobname)).final.log
         #PBS -M bhar9988@uni.sydney.edu.au
         #PBS $(Base.shell_escape(Jcmd))
         #PBS -l select=1:ncpus=$((ncpus)):mem=$(mem)GB
@@ -119,12 +121,16 @@ function ClusterManagers.manage(manager::PBSProManager,
 end
 
 function ClusterManagers.kill(manager::PBSProManager, id::Int64, config::WorkerConfig)
-    remotecall(exit, id)
-    close(config.io)
+    @info "Killing process $id"
+    # remotecall(exit, id)
+    # close(config.io)
+    pbsid = Distributed.map_pid_wrkr[id].config.userdata[:job]
+    run(`ssh headnode "/usr/physics/pbspro/bin/qdel $pbsid"`)
+    @info "Killed process $id, job $pbsid."
 
-    if isfile(config.userdata[:iofile])
-        rm(config.userdata[:iofile])
-    end
+    # if isfile(config.userdata[:iofile])
+    #     rm(config.userdata[:iofile])
+    # end
 end
 
 function addprocs(np::Integer, ncpus, mem, walltime; qsub_flags = ``, kwargs...)
@@ -136,5 +142,88 @@ function addprocs(np::Integer; ncpus = 10, mem = 31, walltime = 48, qsub_flags =
                   kwargs...)
     ClusterManagers.addprocs(PBSProManager(np, ncpus, mem, walltime, qsub_flags);
                              enable_threaded_blas = true, kwargs...)
+end
+
+function addprocs(f::Function; preamble = nothing, args, kwargs, _kwargs...)
+    p = addprocs(1; _kwargs...) |> only
+    if !isnothing(preamble)
+        if !(preamble isa Expr)
+            preamble = Meta.parse(preamble)
+        end
+        @everywhere p $preamble
+    end
+    # function func(f, args...; kwargs...)
+    #     try
+    #         f(args...; kwargs...)
+    #     catch e
+    #         e
+    #     end
+    # end
+    o = remotecall_fetch(f, p, args...; kwargs...)
+    @info "Worker $p completed successfully, removing."
+    # remotecall(exit, p)
+    # close(Distributed.map_pid_wrkr[p].config.io)
+    # if isfile(Distributed.map_pid_wrkr[p].config.userdata[:iofile])
+    #     rm(Distributed.map_pid_wrkr[p].config.userdata[:iofile])
+    # end
+    pbsid = Distributed.map_pid_wrkr[p].config.userdata[:job]
+    # @info pbsid
+    run(`ssh headnode "/usr/physics/pbspro/bin/qdel $pbsid"`)
+    @info "Worker $p removed successfully."
+    return o
+end
+function addprocs(f::Function, itr; preamble = nothing, args = (), kwargs = (;), _kwargs...)
+    O = Vector{Any}(undef, length(itr))
+    procs = addprocs(length(itr); _kwargs...)
+    if !isnothing(preamble)
+        if !(preamble isa Expr)
+            preamble = Meta.parse(preamble)
+        end
+        @everywhere procs $preamble
+    end
+    @sync for i in eachindex(itr)
+        p = procs[i]
+        # function func(f, args...; kwargs...)
+        #     try
+        #         f(args...; kwargs...)
+        #     catch e
+        #         e
+        #     end
+        # end
+        o = @async remotecall_fetch(f, p, (itr[i], args...); kwargs...)
+        O[i] = o
+    end
+    @info "Workerscompleted successfully, removing."
+    for p in procs
+        pbsid = Distributed.map_pid_wrkr[p].config.userdata[:job]
+        run(`ssh headnode "/usr/physics/pbspro/bin/qdel $pbsid"`)
+        @info "Job $pbsid removed successfully."
+    end
+    return O
+end
+function addprocs(f::Function, itr, batchsize::Integer; args = (), kwargs = (;),
+                  _kwargs...)
+    if batchsize == 1
+        O = Vector{Any}(undef, length(itr))
+        for i in eachindex(itr)
+            o = @async addprocs(f; args = (itr[i], args...), kwargs = kwargs, _kwargs...)
+            O[i] = o
+        end
+    else # This helps because precompilation always takes place on the calling process, so want to limit the number of times it happens, but still asynchronously start jobs
+        batches = collect(Iterators.partition(eachindex(itr), batchsize))
+        O = Vector{Any}(undef, length(batches))
+        for bi in eachindex(batches)
+            o = @async addprocs(f, itr[batches[bi]]; args, kwargs = kwargs, _kwargs...)
+            O[bi] = o
+        end
+    end
+    return O
+end
+
+function selfdestruct()
+    pbsid = split(ENV["PBS_JOBID"], ".") |> first
+    @info "Nuking job $pbsid"
+    run(`ssh headnode "/usr/physics/pbspro/bin/qdel $pbsid"`)
+    @info "Nuked job $pbsid." # All going well, this won't run
 end
 end # module

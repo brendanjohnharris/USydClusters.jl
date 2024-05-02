@@ -35,6 +35,7 @@ function ClusterManagers.launch(manager::PBSProManager,
         walltime = manager.walltime
         queue = manager.queue
         project = manager.project
+        @info "Activating worker project $project"
 
         jobname = `julia-$(getpid())`
 
@@ -54,8 +55,8 @@ function ClusterManagers.launch(manager::PBSProManager,
         #PBS -l walltime=$((walltime)):00:00 $(Base.shell_escape(queue))
         cd $dir
         source /headnode2/bhar9988/.bashrc
-        export JULIA_WORKER_TIMEOUT=360
-        $(Base.shell_escape(exename)) -t auto --project=$project $(Base.shell_escape(exeflags)) $(Base.shell_escape(ClusterManagers.worker_arg())) 2>&1 | tee ~/jobs/\${PBS_JOBID}.log"""
+        export JULIA_WORKER_TIMEOUT=480
+        $(Base.shell_escape(exename)) -t auto --heap-size-hint=1G --project=$project $(Base.shell_escape(exeflags)) $(Base.shell_escape(ClusterManagers.worker_arg())) 2>&1 | tee ~/jobs/\${PBS_JOBID}.log"""
         f = tempname(jobdir)
         write(f, cmd)
         # qsub_cmd = pipeline(`echo $(Base.shell_escape(cmd))`, `qsub -N $jobname -V -j oe -k o -m ae -M bhar9988@uni.sydney.edu.au $Jcmd -l select=1:ncpus=$(ncpus):mem=$(mem)GB -l walltime=$(walltime):00:00 $queue`)
@@ -89,19 +90,38 @@ function ClusterManagers.launch(manager::PBSProManager,
             # wait for each output stream file to get created
             fnames = filenames(i)
             j = 0
-            while (j = findfirst(x -> isfile(x), fnames)) === nothing
-                sleep(1.0)
+            start_time = time()
+            while (j = findfirst(x -> isfile(x), fnames)) === nothing &&
+                (time() - start_time) < hosttimeout
+                sleep(0.5)
                 @debug "Waiting for worker $i to connect at $fnames"
                 @debug isfile(fnames[1])
             end
+            (j = findfirst(x -> isfile(x), fnames)) === nothing &&
+                error("Worker $i did not connect at $fnames after $hosttimeout seconds.")
             fname = fnames[j]
 
             # Hack to get Base to get the host:port, the Julia process has already started.
-            cmd = `tail -f $fname`
+            # cmd = `tail -f $fname`
+            host = readline(fname)
+            hosttimeout = 120
+            start_time = time()
+            while isempty(host) && (time() - start_time) < hosttimeout
+                sleep(0.5)
+                @debug "Waiting for worker $i to write hostname to $fname"
+                host = readline(fname)
+            end
+            isempty(host) &&
+                error("Hostname not written to file after $hosttimeout seconds.")
+            host = split(host, ['#', ':'])
+            port = Meta.parse(host[2])
+            host = host[3]
 
             config = WorkerConfig()
 
-            config.io = open(detach(cmd))
+            # config.io = open(detach(cmd))
+            config.host = host
+            config.port = port
 
             config.userdata = Dict{Symbol, Any}(:job => id, :task => i, :iofile => fname)
             push!(instances_arr, config)
@@ -122,25 +142,32 @@ end
 
 function ClusterManagers.kill(manager::PBSProManager, id::Int64, config::WorkerConfig)
     @info "Killing process $id"
-    # remotecall(exit, id)
+    remotecall(exit, id)
     # close(config.io)
-    pbsid = Distributed.map_pid_wrkr[id].config.userdata[:job]
-    run(`ssh headnode "/usr/physics/pbspro/bin/qdel $pbsid"`)
-    @info "Killed process $id, job $pbsid."
+    ## pbsid = Distributed.map_pid_wrkr[id].config.userdata[:job]
+    #pbsid = split(ENV["PBS_JOBID"], ".") |> first
+    #run(`ssh headnode "/usr/physics/pbspro/bin/qdel $pbsid"`)
+    #@info "Killed process $id, job $pbsid."
+
+    # * Delete all tail commands associated with this job id
+    # pids = run(`ps aux \| grep tail \| grep head`)
+    # * Now delete any pids matching this pbs id
 
     # if isfile(config.userdata[:iofile])
     #     rm(config.userdata[:iofile])
     # end
 end
 
-function addprocs(np::Integer, ncpus, mem, walltime; qsub_flags = ``, kwargs...)
-    ClusterManagers.addprocs(PBSProManager(np, ncpus, mem, walltime, qsub_flags);
+function addprocs(np::Integer, ncpus, mem, walltime; qsub_flags = ``, project = ``,
+                  kwargs...)
+    ClusterManagers.addprocs(PBSProManager(np, ncpus, mem, walltime, qsub_flags, project);
                              enable_threaded_blas = true, kwargs...)
 end
 
 function addprocs(np::Integer; ncpus = 10, mem = 31, walltime = 48, qsub_flags = ``,
+                  project = ``,
                   kwargs...)
-    ClusterManagers.addprocs(PBSProManager(np, ncpus, mem, walltime, qsub_flags);
+    ClusterManagers.addprocs(PBSProManager(np, ncpus, mem, walltime, qsub_flags, project);
                              enable_threaded_blas = true, kwargs...)
 end
 
@@ -150,7 +177,9 @@ function addprocs(f::Function; preamble = nothing, args, kwargs, _kwargs...)
         if !(preamble isa Expr)
             preamble = Meta.parse(preamble)
         end
-        @everywhere p $preamble
+        # @everywhere p $preamble
+        o = @spawnat p eval(preamble)
+        wait(o)
     end
     # function func(f, args...; kwargs...)
     #     try

@@ -56,7 +56,7 @@ function ClusterManagers.launch(manager::PBSProManager,
         cd $dir
         source /headnode2/bhar9988/.bashrc
         export JULIA_WORKER_TIMEOUT=480
-        $(Base.shell_escape(exename)) -t auto --heap-size-hint=1G --project=$project $(Base.shell_escape(exeflags)) $(Base.shell_escape(ClusterManagers.worker_arg())) 2>&1 | tee ~/jobs/\${PBS_JOBID}.log"""
+        $(Base.shell_escape(exename)) -t auto --heap-size-hint=$(mem÷2)G --project=$project $(Base.shell_escape(exeflags)) $(Base.shell_escape(ClusterManagers.worker_arg())) 2>&1 | tee ~/jobs/\${PBS_JOBID}.log"""
         f = tempname(jobdir)
         write(f, cmd)
         # qsub_cmd = pipeline(`echo $(Base.shell_escape(cmd))`, `qsub -N $jobname -V -j oe -k o -m ae -M bhar9988@uni.sydney.edu.au $Jcmd -l select=1:ncpus=$(ncpus):mem=$(mem)GB -l walltime=$(walltime):00:00 $queue`)
@@ -90,6 +90,7 @@ function ClusterManagers.launch(manager::PBSProManager,
             # wait for each output stream file to get created
             fnames = filenames(i)
             j = 0
+            hosttimeout = 120
             start_time = time()
             while (j = findfirst(x -> isfile(x), fnames)) === nothing &&
                 (time() - start_time) < hosttimeout
@@ -104,7 +105,6 @@ function ClusterManagers.launch(manager::PBSProManager,
             # Hack to get Base to get the host:port, the Julia process has already started.
             # cmd = `tail -f $fname`
             host = readline(fname)
-            hosttimeout = 120
             start_time = time()
             while isempty(host) && (time() - start_time) < hosttimeout
                 sleep(0.5)
@@ -128,7 +128,7 @@ function ClusterManagers.launch(manager::PBSProManager,
             notify(c)
         end
         rm(f, force = true)
-        println("Running.")
+        println("Running. See stdout of children at $jobdir (jobid: $id)")
 
     catch e
         println("Error launching workers")
@@ -248,6 +248,41 @@ function addprocs(f::Function, itr, batchsize::Integer; args = (), kwargs = (;),
     end
     return O
 end
+
+function runscript(file::String; parent = "~/jobs/", ncpus = 10, mem = 31, walltime = 48,
+                   qsub_flags = "", project = ``, exename = `julia`,
+                   exeflags = ``,
+                   kwargs...)
+    ID = file |> Base.splitext |> first |> Base.splitpath |> last |> Base.shell_escape
+    cmd = """#!/bin/bash
+    #PBS -N $(ID)
+    #PBS -V
+    #PBS -j oe
+    #PBS -m ae
+    #PBS -o ~/jobs/$(ID).final.log
+    #PBS -M bhar9988@uni.sydney.edu.au
+    #PBS -l select=1:ncpus=$((ncpus)):mem=$(mem)GB
+    #PBS -l walltime=$((walltime)):00:00
+    source /headnode2/bhar9988/.bashrc
+    cd $project
+    $(Base.shell_escape(exename)) $(Base.shell_escape(exeflags)) -t auto --heap-size-hint=$(mem÷2)G --project=$project $(Base.shell_escape(file)) 2>&1 | tee ~/jobs/$(ID).log"""
+    qsub_file = first(mktemp(parent; cleanup = false))
+    open(qsub_file, "w") do f
+        write(f, cmd)
+    end
+    qsub = "source ~/.tcshrc && /usr/physics/pbspro/bin/qsub $(string(qsub_flags)) $(Base.shell_escape(qsub_file))"
+    qsub_cmd = `ssh headnode "$qsub"`
+    run(qsub_cmd)
+    return nothing
+end
+
+function runscript(expr::Expr; parent = ENV["HOME"] * "/jobs/", kwargs...)
+    file = first(mktemp(parent, ; cleanup = false))
+    open(file, "w") do f
+        write(f, string(expr))
+    end
+    runscript(file; parent, kwargs...)
+end # Have one for vector of exprs, job arrays?
 
 function selfdestruct()
     pbsid = split(ENV["PBS_JOBID"], ".") |> first

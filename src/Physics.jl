@@ -61,7 +61,7 @@ function ClusterManagers.launch(manager::PBSProManager,
         # qsub_cmd = pipeline(`echo $(Base.shell_escape(cmd))`, `qsub -N $jobname -V -j oe -k o -m ae -M bhar9988@uni.sydney.edu.au $Jcmd -l select=1:ncpus=$(ncpus):mem=$(mem)GB -l walltime=$(walltime):00:00 $queue`)
         @debug(cmd)
         mkpath(jobdir)
-        qsub = "source ~/.tcshrc && /usr/physics/pbspro/bin/qsub $(Base.shell_escape(f))"
+        qsub = "source ~/.tcshrc > /dev/null && /usr/physics/pbspro/bin/qsub $(Base.shell_escape(f))"
         qsub_cmd = pipeline(`ssh headnode "$qsub"`)
         @debug qsub_cmd
         out = open(qsub_cmd)
@@ -69,11 +69,14 @@ function ClusterManagers.launch(manager::PBSProManager,
         if !success(out)
             throw(error()) # qsub already gives a message
         end
-
-        id = chomp(split(readline(out), '.')[1])
+        line = readline(out)
+        id = chomp(split(line, '.')[1])
         @debug id
         if endswith(id, "[]")
             id = id[1:(end - 2)]
+        end
+        if isnothing(tryparse(Int, id))
+            error("Job id coudl not be parse from worker output '$line'. Please make sure tour `.tcshrc` file does not print anything to stdout.")
         end
 
         function filenames(i)
@@ -90,7 +93,7 @@ function ClusterManagers.launch(manager::PBSProManager,
             fnames = filenames(i)
             j = 0
             if haskey(ENV, "JULIA_WORKER_TIMEOUT")
-                hosttimeout = ENV["JULIA_WORKER_TIMEOUT"]
+                hosttimeout = tryparse(Int, ENV["JULIA_WORKER_TIMEOUT"])
             else
                 hosttimeout = 480
             end

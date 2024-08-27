@@ -55,7 +55,6 @@ function ClusterManagers.launch(manager::PBSProManager,
         #PBS -l walltime=$((walltime)):00:00 $(Base.shell_escape(queue))
         cd $dir
         source /headnode2/bhar9988/.bashrc
-        export JULIA_WORKER_TIMEOUT=480
         $(Base.shell_escape(exename)) -t auto --heap-size-hint=$(mem÷2)G --project=$project $(Base.shell_escape(exeflags)) $(Base.shell_escape(ClusterManagers.worker_arg())) 2>&1 | tee ~/jobs/\${PBS_JOBID}.log"""
         f = tempname(jobdir)
         write(f, cmd)
@@ -90,7 +89,11 @@ function ClusterManagers.launch(manager::PBSProManager,
             # wait for each output stream file to get created
             fnames = filenames(i)
             j = 0
-            hosttimeout = 120
+            if haskey(ENV, "JULIA_WORKER_TIMEOUT")
+                hosttimeout = ENV["JULIA_WORKER_TIMEOUT"]
+            else
+                hosttimeout = 480
+            end
             start_time = time()
             while (j = findfirst(x -> isfile(x), fnames)) === nothing &&
                 (time() - start_time) < hosttimeout

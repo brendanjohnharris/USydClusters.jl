@@ -301,7 +301,7 @@ function runscripts(exprs; parent = expanduser("~/jobs/"), ncpus = 10, mem = 31,
     #PBS -V
     #PBS -j oe
     #PBS -m ae
-    #PBS -o ~/jobs/$(ID).final.log
+    #PBS -o ~/jobs/$(ID)_$(N).final.log
     #PBS -M bhar9988@uni.sydney.edu.au
     #PBS -l select=1:ncpus=$((ncpus)):mem=$(mem)GB
     #PBS -l walltime=$((walltime)):00:00

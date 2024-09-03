@@ -286,7 +286,7 @@ function runscripts(exprs; parent = "~/jobs/", ncpus = 10, mem = 31,
                     qsub_flags = "", project = ``, exename = `julia`,
                     exeflags = ``,
                     kwargs...)
-    ID = file |> Base.splitext |> first |> Base.splitpath |> last |> Base.shell_escape
+    ID = rand(UInt16) |> Int
     N = length(exprs)
     files = map(enumerate(exprs)) do (i, ex)
         file = "~/jobs/runscripts_$(ID)_$i.jl"

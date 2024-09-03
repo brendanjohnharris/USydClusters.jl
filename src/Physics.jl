@@ -287,7 +287,7 @@ function runscripts(exprs; parent = "~/jobs/", ncpus = 10, mem = 31,
                     exeflags = ``,
                     kwargs...)
     ID = file |> Base.splitext |> first |> Base.splitpath |> last |> Base.shell_escape
-    N = length(files)
+    N = length(exprs)
     files = map(enumerate(exprs)) do (i, ex)
         file = "~/jobs/runscripts_$(ID)_$i.jl"
         first(mktemp(parent, ; cleanup = false))

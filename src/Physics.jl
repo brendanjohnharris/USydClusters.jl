@@ -266,7 +266,7 @@ function runscript(file::String; parent = expanduser("~/jobs/"), ncpus = 10, mem
     #PBS -V
     #PBS -j oe
     #PBS -m ae
-    #PBS -o ~/jobs/$(ID).final.log
+    #PBS -o ~/jobs/\$(PBS_JOBID).final.log
     #PBS -M bhar9988@uni.sydney.edu.au
     #PBS -l select=1:ncpus=$((ncpus)):mem=$(mem)GB
     #PBS -l walltime=$((walltime)):00:00
@@ -301,7 +301,7 @@ function runscripts(exprs; parent = expanduser("~/jobs/"), ncpus = 10, mem = 31,
     #PBS -V
     #PBS -j oe
     #PBS -m ae
-    #PBS -o ~/jobs/$(ID)_$(N).final.log
+    #PBS -o ~/jobs/\$(PBS_JOBID).final.log
     #PBS -M bhar9988@uni.sydney.edu.au
     #PBS -l select=1:ncpus=$((ncpus)):mem=$(mem)GB
     #PBS -l walltime=$((walltime)):00:00
@@ -315,7 +315,7 @@ function runscripts(exprs; parent = expanduser("~/jobs/"), ncpus = 10, mem = 31,
     end
     qsub = "source ~/.tcshrc && /usr/physics/pbspro/bin/qsub $(string(qsub_flags)) $(Base.shell_escape(qsub_file))"
     qsub_cmd = `ssh headnode "$qsub"`
-    @info "Submitting array job with id $ID"
+    @info "Submitting array job with id $ID (logdir: $parent)"
     run(qsub_cmd)
     return nothing
 end

@@ -281,6 +281,43 @@ function runscript(file::String; parent = "~/jobs/", ncpus = 10, mem = 31, wallt
     run(qsub_cmd)
     return nothing
 end
+function runscripts(exprs; parent = "~/jobs/", ncpus = 10, mem = 31,
+                    walltime = 48,
+                    qsub_flags = "", project = ``, exename = `julia`,
+                    exeflags = ``,
+                    kwargs...)
+    ID = file |> Base.splitext |> first |> Base.splitpath |> last |> Base.shell_escape
+    N = length(files)
+    files = map(enumerate(exprs)) do (i, ex)
+        file = "~/jobs/runscripts_$(ID)_$i.jl"
+        first(mktemp(parent, ; cleanup = false))
+        open(file, "w") do f
+            write(f, string(ex))
+        end
+        return file
+    end
+    cmd = """#!/bin/bash
+    #PBS -N $(ID)
+    #PBS -V
+    #PBS -j oe
+    #PBS -m ae
+    #PBS -o ~/jobs/$(ID).final.log
+    #PBS -M bhar9988@uni.sydney.edu.au
+    #PBS -l select=1:ncpus=$((ncpus)):mem=$(mem)GB
+    #PBS -l walltime=$((walltime)):00:00
+    #PBS -J 1-$N
+    source /headnode2/bhar9988/.bashrc
+    cd $project
+    $(Base.shell_escape(exename)) $(Base.shell_escape(exeflags)) -t auto --heap-size-hint=$(mem÷2)G --project=$project ~/jobs/runscripts_$(ID)_\$PBS_ARRAY_INDEX.jl 2>&1 | tee ~/jobs/$(ID).log"""
+    qsub_file = first(mktemp(parent; cleanup = false))
+    open(qsub_file, "w") do f
+        write(f, cmd)
+    end
+    qsub = "source ~/.tcshrc && /usr/physics/pbspro/bin/qsub $(string(qsub_flags)) $(Base.shell_escape(qsub_file))"
+    qsub_cmd = `ssh headnode "$qsub"`
+    run(qsub_cmd)
+    return nothing
+end
 
 function runscript(expr::Expr; parent = ENV["HOME"] * "/jobs/", kwargs...)
     file = first(mktemp(parent, ; cleanup = false))

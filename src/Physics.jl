@@ -255,7 +255,8 @@ function addprocs(f::Function, itr, batchsize::Integer; args = (), kwargs = (;),
     return O
 end
 
-function runscript(file::String; parent = "~/jobs/", ncpus = 10, mem = 31, walltime = 48,
+function runscript(file::String; parent = expanduser("~/jobs/"), ncpus = 10, mem = 31,
+                   walltime = 48,
                    qsub_flags = "", project = ``, exename = `julia`,
                    exeflags = ``,
                    kwargs...)
@@ -281,7 +282,7 @@ function runscript(file::String; parent = "~/jobs/", ncpus = 10, mem = 31, wallt
     run(qsub_cmd)
     return nothing
 end
-function runscripts(exprs; parent = "~/jobs/", ncpus = 10, mem = 31,
+function runscripts(exprs; parent = expanduser("~/jobs/"), ncpus = 10, mem = 31,
                     walltime = 48,
                     qsub_flags = "", project = ``, exename = `julia`,
                     exeflags = ``,
@@ -289,8 +290,7 @@ function runscripts(exprs; parent = "~/jobs/", ncpus = 10, mem = 31,
     ID = rand(UInt16) |> Int
     N = length(exprs)
     files = map(enumerate(exprs)) do (i, ex)
-        file = "~/jobs/runscripts_$(ID)_$i.jl"
-        first(mktemp(parent, ; cleanup = false))
+        file = expanduser("~/jobs/runscripts_$(ID)_$i.jl")
         open(file, "w") do f
             write(f, string(ex))
         end
@@ -308,7 +308,7 @@ function runscripts(exprs; parent = "~/jobs/", ncpus = 10, mem = 31,
     #PBS -J 1-$N
     source /headnode2/bhar9988/.bashrc
     cd $project
-    $(Base.shell_escape(exename)) $(Base.shell_escape(exeflags)) -t auto --heap-size-hint=$(mem÷2)G --project=$project ~/jobs/runscripts_$(ID)_\$PBS_ARRAY_INDEX.jl 2>&1 | tee ~/jobs/$(ID).log"""
+    $(Base.shell_escape(exename)) $(Base.shell_escape(exeflags)) -t auto --heap-size-hint=$(mem÷2)G --project=$project ~/jobs/runscripts_$(ID)_\$PBS_ARRAY_INDEX.jl 2>&1 | tee ~/jobs/$PBS_JOB_ID.log"""
     qsub_file = first(mktemp(parent; cleanup = false))
     open(qsub_file, "w") do f
         write(f, cmd)
@@ -319,7 +319,7 @@ function runscripts(exprs; parent = "~/jobs/", ncpus = 10, mem = 31,
     return nothing
 end
 
-function runscript(expr::Expr; parent = ENV["HOME"] * "/jobs/", kwargs...)
+function runscript(expr::Expr; parent = expanduser("~/jobs/"), kwargs...)
     file = first(mktemp(parent, ; cleanup = false))
     open(file, "w") do f
         write(f, string(expr))

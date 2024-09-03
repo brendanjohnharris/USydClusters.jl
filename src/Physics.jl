@@ -308,7 +308,7 @@ function runscripts(exprs; parent = expanduser("~/jobs/"), ncpus = 10, mem = 31,
     #PBS -J 1-$N
     source /headnode2/bhar9988/.bashrc
     cd $project
-    $(Base.shell_escape(exename)) $(Base.shell_escape(exeflags)) -t auto --heap-size-hint=$(mem÷2)G --project=$project ~/jobs/runscripts_$(ID)_\$PBS_ARRAY_INDEX.jl 2>&1 | tee ~/jobs/$PBS_JOB_ID.log"""
+    $(Base.shell_escape(exename)) $(Base.shell_escape(exeflags)) -t auto --heap-size-hint=$(mem÷2)G --project=$project ~/jobs/runscripts_$(ID)_\$PBS_ARRAY_INDEX.jl 2>&1 | tee ~/jobs/$(ID)_$(N).log"""
     qsub_file = first(mktemp(parent; cleanup = false))
     open(qsub_file, "w") do f
         write(f, cmd)

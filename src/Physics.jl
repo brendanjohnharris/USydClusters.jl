@@ -315,6 +315,7 @@ function runscripts(exprs; parent = expanduser("~/jobs/"), ncpus = 10, mem = 31,
     end
     qsub = "source ~/.tcshrc && /usr/physics/pbspro/bin/qsub $(string(qsub_flags)) $(Base.shell_escape(qsub_file))"
     qsub_cmd = `ssh headnode "$qsub"`
+    @info "Submitting array job with id $ID"
     run(qsub_cmd)
     return nothing
 end

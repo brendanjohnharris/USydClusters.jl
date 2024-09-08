@@ -272,7 +272,7 @@ function runscript(file::String; parent = expanduser("~/jobs/"), ncpus = 10, mem
     #PBS -l walltime=$((walltime)):00:00
     source /headnode2/bhar9988/.bashrc
     cd $project
-    $(Base.shell_escape(exename)) $(Base.shell_escape(exeflags)) -t auto --heap-size-hint=$(mem÷2)G --project=$project $(Base.shell_escape(file)) 2>&1 | tee ~/jobs/$(ID).log"""
+    $(Base.shell_escape(exename)) $(Base.shell_escape(exeflags)) -t auto --heap-size-hint=$(mem÷2)G --project=$project $(Base.shell_escape(file)) 2>&1 | tee ~/jobs/$(ID).headnode.log"""
     qsub_file = first(mktemp(parent; cleanup = false))
     open(qsub_file, "w") do f
         write(f, cmd)
@@ -301,14 +301,14 @@ function runscripts(exprs; parent = expanduser("~/jobs/"), ncpus = 10, mem = 31,
     #PBS -V
     #PBS -j oe
     #PBS -m ae
-    #PBS -o ~/jobs/\$(PBS_JOBID).final.log
+    #PBS -o ~/jobs/\${PBS_JOBID}.final.log
     #PBS -M bhar9988@uni.sydney.edu.au
     #PBS -l select=1:ncpus=$((ncpus)):mem=$(mem)GB
     #PBS -l walltime=$((walltime)):00:00
     #PBS -J 1-$N
     source /headnode2/bhar9988/.bashrc
     cd $project
-    $(Base.shell_escape(exename)) $(Base.shell_escape(exeflags)) -t auto --heap-size-hint=$(mem÷2)G --project=$project ~/jobs/runscripts_$(uID)_\$(PBS_ARRAY_INDEX).jl 2>&1 | tee ~/jobs/\$(PBS_JOBID)[\$(PBS_ARRAY_INDEX)].log"""
+    $(Base.shell_escape(exename)) $(Base.shell_escape(exeflags)) -t auto --heap-size-hint=$(mem÷2)G --project=$project ~/jobs/runscripts_$(uID)_\${PBS_ARRAY_INDEX}.jl 2>&1 | tee ~/jobs/\${PBS_JOBID}[\${PBS_ARRAY_INDEX}].headnode.log"""
     qsub_file = first(mktemp(parent; cleanup = false))
     open(qsub_file, "w") do f
         write(f, cmd)

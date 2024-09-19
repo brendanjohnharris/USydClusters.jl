@@ -53,7 +53,7 @@ function ClusterManagers.launch(manager::PBSProManager,
         export JULIA_CONDAPKG_OFFLINE="yes"
         export JULIA_PYTHONCALL_EXE="@PyCall"
         export JULIA_CONDAPKG_BACKEND="Null"
-        $(Base.shell_escape(exename)) -t auto --project=/home/bhar9988/code/AllenAttention.jl/ $(Base.shell_escape(exeflags)) $(Base.shell_escape(ClusterManagers.worker_arg())) 2>&1 | tee ~/jobs/julia_subprocess.log"""
+        $(Base.shell_escape(exename)) -t auto --project=/home/bhar9988/code/AllenAttention.jl/ $(Base.shell_escape(exeflags)) $(Base.shell_escape(ClusterManagers.worker_arg())) 2>&1 | tee $(ENV["HOME"])/jobs/julia_subprocess.log"""
         f = tempname()
         write(f, cmd)
         # qsub_cmd = pipeline(`echo $(Base.shell_escape(cmd))`, `qsub -N $jobname -V -j oe -k o -m ae -M bhar9988@uni.sydney.edu.au $Jcmd -l select=1:ncpus=$(ncpus):mem=$(mem)GB -l walltime=$(walltime):00:00 $queue`)

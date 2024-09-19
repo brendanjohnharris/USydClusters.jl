@@ -55,13 +55,13 @@ function ClusterManagers.launch(manager::PBSProManager,
         #PBS -l walltime=$((walltime)):00:00 $(Base.shell_escape(queue))
         cd $dir
         source /headnode2/bhar9988/.bashrc
-        $(Base.shell_escape(exename)) -t auto --heap-size-hint=$(mem÷2)G --project=$project $(Base.shell_escape(exeflags)) $(Base.shell_escape(ClusterManagers.worker_arg())) 2>&1 | tee ~/jobs/\${PBS_JOBID}.log"""
+        $(Base.shell_escape(exename)) -t auto --heap-size-hint=$(mem÷2)G --project=$project $(Base.shell_escape(exeflags)) $(Base.shell_escape(ClusterManagers.worker_arg())) 2>&1 | tee $(ENV["HOME"])/jobs/\${PBS_JOBID}.log"""
         f = tempname(jobdir)
         write(f, cmd)
         # qsub_cmd = pipeline(`echo $(Base.shell_escape(cmd))`, `qsub -N $jobname -V -j oe -k o -m ae -M bhar9988@uni.sydney.edu.au $Jcmd -l select=1:ncpus=$(ncpus):mem=$(mem)GB -l walltime=$(walltime):00:00 $queue`)
         @debug(cmd)
         mkpath(jobdir)
-        qsub = "source ~/.tcshrc > /dev/null && /usr/physics/pbspro/bin/qsub $(Base.shell_escape(f))"
+        qsub = "source $(ENV["HOME"])/.tcshrc > /dev/null && /usr/physics/pbspro/bin/qsub $(Base.shell_escape(f))"
         qsub_cmd = pipeline(`ssh headnode "$qsub"`)
         @debug qsub_cmd
         out = open(qsub_cmd)
@@ -255,7 +255,7 @@ function addprocs(f::Function, itr, batchsize::Integer; args = (), kwargs = (;),
     return O
 end
 
-function runscript(file::String; parent = expanduser("~/jobs/"), ncpus = 10, mem = 31,
+function runscript(file::String; parent = expanduser("$(ENV["HOME"])/jobs/"), ncpus = 10, mem = 31,
                    walltime = 48,
                    qsub_flags = "", project = ``, exename = `julia`,
                    exeflags = ``,
@@ -266,23 +266,23 @@ function runscript(file::String; parent = expanduser("~/jobs/"), ncpus = 10, mem
     #PBS -V
     #PBS -j oe
     #PBS -m ae
-    #PBS -o ~/jobs/\$(PBS_JOBID).final.log
+    #PBS -o $(ENV["HOME"])/jobs/\$(PBS_JOBID).final.log
     #PBS -M bhar9988@uni.sydney.edu.au
     #PBS -l select=1:ncpus=$((ncpus)):mem=$(mem)GB
     #PBS -l walltime=$((walltime)):00:00
     source /headnode2/bhar9988/.bashrc
     cd $project
-    $(Base.shell_escape(exename)) $(Base.shell_escape(exeflags)) -t auto --heap-size-hint=$(mem÷2)G --project=$project $(Base.shell_escape(file)) 2>&1 | tee ~/jobs/$(ID).headnode.log"""
+    $(Base.shell_escape(exename)) $(Base.shell_escape(exeflags)) -t auto --heap-size-hint=$(mem÷2)G --project=$project $(Base.shell_escape(file)) 2>&1 | tee $(ENV["HOME"])/jobs/$(ID).headnode.log"""
     qsub_file = first(mktemp(parent; cleanup = false))
     open(qsub_file, "w") do f
         write(f, cmd)
     end
-    qsub = "source ~/.tcshrc && /usr/physics/pbspro/bin/qsub $(string(qsub_flags)) $(Base.shell_escape(qsub_file))"
+    qsub = "source $(ENV["HOME"])/.tcshrc && /usr/physics/pbspro/bin/qsub $(string(qsub_flags)) $(Base.shell_escape(qsub_file))"
     qsub_cmd = `ssh headnode "$qsub"`
     run(qsub_cmd)
     return nothing
 end
-function runscripts(exprs; parent = expanduser("~/jobs/"), ncpus = 10, mem = 31,
+function runscripts(exprs; parent = expanduser("$(ENV["HOME"])/jobs/"), ncpus = 10, mem = 31,
                     walltime = 48,
                     qsub_flags = "", project = ``, exename = `julia`,
                     exeflags = ``,
@@ -290,7 +290,7 @@ function runscripts(exprs; parent = expanduser("~/jobs/"), ncpus = 10, mem = 31,
     uID = rand(UInt16) |> Int
     N = length(exprs)
     files = map(enumerate(exprs)) do (i, ex)
-        file = expanduser("~/jobs/runscripts_$(uID)_$i.jl")
+        file = expanduser("$(ENV["HOME"])/jobs/runscripts_$(uID)_$i.jl")
         open(file, "w") do f
             write(f, string(ex))
         end
@@ -301,26 +301,26 @@ function runscripts(exprs; parent = expanduser("~/jobs/"), ncpus = 10, mem = 31,
     #PBS -V
     #PBS -j oe
     #PBS -m ae
-    #PBS -o ~/jobs/\${PBS_JOBID}.final.log
+    #PBS -o $(ENV["HOME"])/jobs/\${PBS_JOBID}.final.log
     #PBS -M bhar9988@uni.sydney.edu.au
     #PBS -l select=1:ncpus=$((ncpus)):mem=$(mem)GB
     #PBS -l walltime=$((walltime)):00:00
     #PBS -J 1-$N
     source /headnode2/bhar9988/.bashrc
     cd $project
-    $(Base.shell_escape(exename)) $(Base.shell_escape(exeflags)) -t auto --heap-size-hint=$(mem÷2)G --project=$project ~/jobs/runscripts_$(uID)_\${PBS_ARRAY_INDEX}.jl 2>&1 | tee ~/jobs/\${PBS_JOBID}.log"""
+    $(Base.shell_escape(exename)) $(Base.shell_escape(exeflags)) -t auto --heap-size-hint=$(mem÷2)G --project=$project $(ENV["HOME"])/jobs/runscripts_$(uID)_\${PBS_ARRAY_INDEX}.jl 2>&1 | tee $(ENV["HOME"])/jobs/\${PBS_JOBID}.log"""
     qsub_file = first(mktemp(parent; cleanup = false))
     open(qsub_file, "w") do f
         write(f, cmd)
     end
-    qsub = "source ~/.tcshrc && /usr/physics/pbspro/bin/qsub $(string(qsub_flags)) $(Base.shell_escape(qsub_file))"
+    qsub = "source $(ENV["HOME"])/.tcshrc && /usr/physics/pbspro/bin/qsub $(string(qsub_flags)) $(Base.shell_escape(qsub_file))"
     qsub_cmd = `ssh headnode "$qsub"`
     @info "Submitting array job with id $uID (logdir: $parent)"
     run(qsub_cmd)
     return nothing
 end
 
-function runscript(expr::Expr; parent = expanduser("~/jobs/"), kwargs...)
+function runscript(expr::Expr; parent = expanduser("$(ENV["HOME"])/jobs/"), kwargs...)
     file = first(mktemp(parent, ; cleanup = false))
     open(file, "w") do f
         write(f, string(expr))

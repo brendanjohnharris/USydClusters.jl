@@ -6,4 +6,4 @@
 [![Coverage](https://codecov.io/gh/brendanjohnharris/USydClusters.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/brendanjohnharris/USydClusters.jl)
 
 
-`sshfs -o follow_symlinks bhar9988@headnode.physics.usyd.edu.au:/headnode2/bhar9988/ ~/Physics/`
+`sshfs -o follow_symlinks bhar9988@headnode.physics.usyd.edu.au:/taiji1/bhar9988/ ~/Physics/`

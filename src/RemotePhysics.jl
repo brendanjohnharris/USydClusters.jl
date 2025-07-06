@@ -47,7 +47,7 @@ function ClusterManagers.launch(manager::PBSProManager,
         cmd = """#!/bin/bash
         $(Base.shell_escape(prequel))
         cd $dir
-        source $(HOME)/.bashrc
+        source \$(HOME)/.bashrc
         export JULIA_WORKER_TIMEOUT=360
         export JULIA_CONDAPKG_OFFLINE=yes
         export JULIA_PYTHONCALL_EXE="@PyCall"

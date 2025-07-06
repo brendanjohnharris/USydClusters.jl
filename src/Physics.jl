@@ -54,7 +54,7 @@ function ClusterManagers.launch(manager::PBSProManager,
         #PBS -l select=1:ncpus=$((ncpus)):mem=$(mem)GB
         #PBS -l walltime=$((walltime)):00:00
         cd $dir
-        source $(HOME)/.bashrc
+        source \$(HOME)/.bashrc
         $(Base.shell_escape(exename)) -t auto --heap-size-hint=$(mem÷2)G --project=$project $(Base.shell_escape(exeflags)) $(Base.shell_escape(ClusterManagers.worker_arg())) 2>&1 | tee $(ENV["HOME"])/jobs/\${PBS_JOBID}.log"""
         f = tempname(jobdir)
         write(f, cmd)
@@ -277,7 +277,7 @@ function runscript(file::String; parent = expanduser("$(ENV["HOME"])/jobs/"), nc
     #PBS -M bhar9988@uni.sydney.edu.au
     #PBS -l select=1:ncpus=$((ncpus)):mem=$(mem)GB
     #PBS -l walltime=$((walltime)):00:00
-    source $(HOME)/.bashrc
+    source \$(HOME)/.bashrc
     cd $project
     $(Base.shell_escape(exename)) $(Base.shell_escape(exeflags)) -t auto --heap-size-hint=$(mem÷2)G --project=$project $(Base.shell_escape(file)) 2>&1 | tee $(ENV["HOME"])/jobs/$(ID).headnode.log"""
     qsub_file = first(mktemp(parent; cleanup = false))
@@ -314,7 +314,7 @@ function runscripts(exprs; parent = expanduser("$(ENV["HOME"])/jobs/"), ncpus = 
     #PBS -l select=1:ncpus=$((ncpus)):mem=$(mem)GB
     #PBS -l walltime=$((walltime)):00:00
     #PBS -J 1-$N
-    source $(HOME)/.bashrc
+    source \$(HOME)/.bashrc
     cd $project
     $(Base.shell_escape(exename)) $(Base.shell_escape(exeflags)) -t auto --heap-size-hint=$(mem÷2)G --project=$project $(ENV["HOME"])/jobs/runscripts_$(uID)_\${PBS_ARRAY_INDEX}.jl 2>&1 | tee $(ENV["HOME"])/jobs/\${PBS_JOBID}.log"""
     qsub_file = first(mktemp(parent; cleanup = false))

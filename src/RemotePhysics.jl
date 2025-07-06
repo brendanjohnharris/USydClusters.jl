@@ -25,7 +25,7 @@ function ClusterManagers.launch(manager::PBSProManager,
         home = ENV["HOME"]
         physics = home * "/Physics"
         remoteaddr = "bhar9988@headnode.physics.usyd.edu.au"
-        remotehome = run(`ssh $remoteaddr "echo \$HOME"`)
+        remotehome = run(`ssh $remoteaddr "echo $(ENV["HOME"])"`)
         dir = params[:dir]
         exename = params[:exename]
         exeflags = params[:exeflags]
@@ -47,7 +47,7 @@ function ClusterManagers.launch(manager::PBSProManager,
         cmd = """#!/bin/bash
         $(Base.shell_escape(prequel))
         cd $dir
-        source \$(HOME)/.bashrc
+        source $(ENV["HOME"])/.bashrc
         export JULIA_WORKER_TIMEOUT=360
         export JULIA_CONDAPKG_OFFLINE=yes
         export JULIA_PYTHONCALL_EXE="@PyCall"

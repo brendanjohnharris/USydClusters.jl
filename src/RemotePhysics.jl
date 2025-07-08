@@ -57,7 +57,7 @@ function ClusterManagers.launch(manager::PBSProManager,
         write(f, cmd)
         # qsub_cmd = pipeline(`echo $(Base.shell_escape(cmd))`, `qsub -N $jobname -V -j oe -k o -m ae -M bhar9988@uni.sydney.edu.au $Jcmd -l select=1:ncpus=$(ncpus):mem=$(mem)GB -l walltime=$(walltime):00:00 $queue`)
         @debug(cmd)
-        qsub_cmd = pipeline(`ssh $remoteaddr "qsub -N $jobname -V -j oe -k o -m ae -M bhar9988@uni.sydney.edu.au $Jcmd -l select=1:ncpus=$(ncpus):mem=$(mem)GB -l walltime=$(walltime):00:00 $queue $f"`)
+        qsub_cmd = pipeline(`ssh $remoteaddr "qsub -N $jobname -V -j oe -k o -m ae -M bhar9988@uni.sydney.edu.au $Jcmd -l select=1:ncpus=$(ncpus):mem=$(mem)GB:vmem=$(mem)GB -l walltime=$(walltime):00:00 $queue $f"`)
         @debug qsub_cmd
         out = open(qsub_cmd)
         @debug out

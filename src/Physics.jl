@@ -51,7 +51,7 @@ function ClusterManagers.launch(manager::PBSProManager,
         #PBS -o $(jobdir)/$(Base.shell_escape(jobname)).final.log
         #PBS -M bhar9988@uni.sydney.edu.au
         #PBS $(Base.shell_escape(Jcmd))
-        #PBS -l select=1:ncpus=$((ncpus)):mem=$(mem)GB
+        #PBS -l select=1:ncpus=$((ncpus)):mem=$(mem)GB:vmem=$(mem)GB
         #PBS -l walltime=$((walltime)):00:00
         cd $dir
         source $(ENV["HOME"])/.bashrc
@@ -275,7 +275,7 @@ function runscript(file::String; parent = expanduser("$(ENV["HOME"])/jobs/"), nc
     #PBS -m ae
     #PBS -o $(ENV["HOME"])/jobs/\$(PBS_JOBID).final.log
     #PBS -M bhar9988@uni.sydney.edu.au
-    #PBS -l select=1:ncpus=$((ncpus)):mem=$(mem)GB
+    #PBS -l select=1:ncpus=$((ncpus)):mem=$(mem)GB:vmem=$(mem)GB
     #PBS -l walltime=$((walltime)):00:00
     source $(ENV["HOME"])/.bashrc
     cd $project
@@ -311,7 +311,7 @@ function runscripts(exprs; parent = expanduser("$(ENV["HOME"])/jobs/"), ncpus = 
     #PBS -m ae
     #PBS -o $(ENV["HOME"])/jobs/\${PBS_JOBID}.final.log
     #PBS -M bhar9988@uni.sydney.edu.au
-    #PBS -l select=1:ncpus=$((ncpus)):mem=$(mem)GB
+    #PBS -l select=1:ncpus=$((ncpus)):mem=$(mem)GB:vmem=$(mem)GB
     #PBS -l walltime=$((walltime)):00:00
     #PBS -J 1-$N
     source $(ENV["HOME"])/.bashrc

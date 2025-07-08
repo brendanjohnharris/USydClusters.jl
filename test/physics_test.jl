@@ -80,4 +80,21 @@ end
         end
     end
     jobid = Physics.runscripts(exprs; ncpus = 1, mem = 1, walltime = 1, queue = "taiji")
+
+    map(uuids, files) do key, tempfile
+        start_time = time()
+        timeout = 30
+        while time() - start_time < timeout
+            if isfile(tempfile)
+                break
+            end
+        end
+        if !isfile(tempfile)
+            error("Output file $tempfile not found after $timeout seconds")
+        end
+
+        sleep(1) # Ensure the file is written before reading
+        @test isfile(tempfile)
+        @test read(tempfile, String) == key
+    end
 end

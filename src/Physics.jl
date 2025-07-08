@@ -25,7 +25,6 @@ function ClusterManagers.launch(manager::PBSProManager,
         dir = params[:dir]
         exename = params[:exename]
         exeflags = params[:exeflags]
-        mem_sandbox = params[:mem_sandbox]
 
         np = manager.np
         ncpus = manager.ncpus
@@ -43,8 +42,7 @@ function ClusterManagers.launch(manager::PBSProManager,
         end
 
         script = ClusterManagers.worker_arg()
-        julia_cmd = build_julia_command(; exename, exeflags, project, script, logfile,
-                                        mem_sandbox)
+        julia_cmd = build_julia_command(; exename, exeflags, project, script, logfile)
 
         jobname = Base.shell_escape(jobname)
 
@@ -278,15 +276,13 @@ function runscript(script::String;
                    qsub_flags = "",
                    project = ``,
                    exeflags = ``,
-                   mem_sandbox = ceil(Int, mem * 1.25),
                    queue = ``,
                    kwargs...)
     ID = script |> Base.splitext |> first |> Base.splitpath |> last |> Base.shell_escape
     logfile = `$(LOGDIR)/\$\{PBS_JOBID\}.$(ID).log`
     exeflags = `$exeflags --heap-size-hint=$(ceil(Int, mem/2))G`
 
-    julia_cmd = build_julia_command(; exeflags, project, script, logfile, mem_sandbox,
-                                    kwargs...)
+    julia_cmd = build_julia_command(; exeflags, project, script, logfile, kwargs...)
 
     cmd = """#!/bin/bash
     #PBS -N $(ID)
@@ -325,7 +321,6 @@ function runscripts(exprs;
                     qsub_flags = "",
                     project = ``,
                     exeflags = ``,
-                    mem_sandbox = ceil(Int, mem * 1.25),
                     queue = ``,
                     kwargs...)
     uID = rand(UInt16) |> Int
@@ -347,8 +342,7 @@ function runscripts(exprs;
     logfile = `$(to_string(logdir))/\$\{PBS_ARRAY_INDEX\}.log`
     exeflags = `$exeflags --heap-size-hint=$(ceil(Int, mem/2))G`
 
-    julia_cmd = build_julia_command(; exeflags, project, script, logfile, mem_sandbox,
-                                    kwargs...)
+    julia_cmd = build_julia_command(; exeflags, project, script, logfile, kwargs...)
     cmd = """#!/bin/bash
     #PBS -N $(uID)
     #PBS -V

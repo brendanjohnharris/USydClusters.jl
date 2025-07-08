@@ -42,19 +42,13 @@ function format_pbs_resources(ncpus, mem, walltime)
 end
 
 function build_julia_command(; exename = `julia`, exeflags = ``,
-                             project = ``, mem_sandbox = false, args = ``,
+                             project = ``, args = ``,
                              script, logfile)
     mkpath(LOGDIR)
-    if isnothing(mem_sandbox) || mem_sandbox === false
-        sandbox = ``
-    else
-        KB = mem_sandbox * 1024 * 1024
-        sandbox = `ulimit -m $(KB) -v $(KB)\;`
-    end
     if !(args isa String)
         args = join(args, " ")
     end
-    `$(sandbox) $exename $exeflags -t auto --project=$project $script $args 2\>\&1 \| tee "$logfile"`
+    `$exename $exeflags -t auto --project=$project $script $args 2\>\&1 \| tee "$logfile"`
 end
 to_string(cmd::Cmd) = join(cmd.exec, " ")
 

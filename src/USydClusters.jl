@@ -54,11 +54,9 @@ function build_julia_command(; exename = `julia`, exeflags = ``,
     if !(args isa String)
         args = join(args, " ")
     end
-    `$(sandbox) $exename $exeflags -t auto --project=$project $script $args 2\>\&1 \| tee $logfile`
+    `$(sandbox) $exename $exeflags -t auto --project=$project $script $args 2\>\&1 \| tee "$logfile"`
 end
-
 to_string(cmd::Cmd) = join(cmd.exec, " ")
 
 include("Physics.jl")
-include("RemotePhysics.jl")
 end

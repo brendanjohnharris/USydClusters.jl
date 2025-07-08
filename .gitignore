@@ -15,4 +15,4 @@ data
 docs/build/
 docs/site/
 .vscode
-test/test.txt
+*.txt

@@ -1,7 +1,7 @@
 module Physics
 using Distributed
 using ClusterManagers
-import .USydClusters: build_julia_command, format_pbs_resources, LOGDIR, to_string
+import USydClusters: build_julia_command, format_pbs_resources, LOGDIR, to_string
 import ClusterManagers.worker_arg
 import ClusterManagers.ClusterManager
 import ClusterManagers.WorkerConfig
@@ -91,9 +91,9 @@ function ClusterManagers.launch(manager::PBSProManager,
 
         function filenames(i)
             if np > 1
-                ["$LOGDIR/$id[$i].headnode.log"]
+                ["$LOGDIR/$id[$i].log"]
             else
-                ["$LOGDIR/$id.headnode.log"]
+                ["$LOGDIR/$id.log"]
             end
         end
 
@@ -265,6 +265,12 @@ function addprocs(f::Function, itr, batchsize::Integer; args = (), kwargs = (;),
     return O
 end
 
+function capture_jobid(cmd)
+    output = read(cmd, String)
+    jobid, hostname = split(output, '.')
+    return jobid
+end
+
 function runscript(script::String;
                    ncpus = 10,
                    mem = 31,
@@ -273,9 +279,10 @@ function runscript(script::String;
                    project = ``,
                    exeflags = ``,
                    mem_sandbox = ceil(Int, mem * 1.25),
+                   queue = ``,
                    kwargs...)
     ID = script |> Base.splitext |> first |> Base.splitpath |> last |> Base.shell_escape
-    logfile = `$(LOGDIR)/\$\{PBS_JOBID\}_$(ID).log`
+    logfile = `$(LOGDIR)/\$\{PBS_JOBID\}.$(ID).log`
     exeflags = `$exeflags --heap-size-hint=$(ceil(Int, mem/2))G`
 
     julia_cmd = build_julia_command(; exeflags, project, script, logfile, mem_sandbox,
@@ -296,10 +303,19 @@ function runscript(script::String;
     open(qsub_file, "w") do f
         write(f, cmd)
     end
-    qsub = "source $(ENV["HOME"])/.bashrc && /usr/physics/pbspro/bin/qsub $(string(qsub_flags)) $(Base.shell_escape(qsub_file))"
+    queue = isempty(queue) ? queue : "-q $(Base.shell_escape(queue))"
+    qsub = "source $(ENV["HOME"])/.bashrc && /usr/physics/pbspro/bin/qsub $(string(qsub_flags)) $queue $(Base.shell_escape(qsub_file))"
     qsub_cmd = `ssh headnode "$qsub"`
-    run(qsub_cmd)
-    return nothing
+    jobid = capture_jobid(qsub_cmd)
+    return jobid, replace(to_string(logfile), r"\$\{PBS_JOBID\}" => "$jobid.headnode")
+end
+
+function runscript(expr::Expr; kwargs...)
+    file = first(mktemp(LOGDIR; cleanup = false))
+    open(file, "w") do f
+        write(f, string(expr))
+    end
+    runscript(file; kwargs...)
 end
 
 function runscripts(exprs;
@@ -310,23 +326,25 @@ function runscripts(exprs;
                     project = ``,
                     exeflags = ``,
                     mem_sandbox = ceil(Int, mem * 1.25),
+                    queue = ``,
                     kwargs...)
     uID = rand(UInt16) |> Int
     N = length(exprs)
 
-    jobarray_script_prefix = `$(LOGDIR)/$(uID)`
+    scriptdir = "$(LOGDIR)/$(uID).script"
 
-    mkpath(expanduser(jobarray_script_prefix))
+    mkpath(expanduser(scriptdir))
     scriptfiles = map(enumerate(exprs)) do (i, ex)
-        file = expanduser("$(jobarray_script_prefix)/$i.jl")
+        file = expanduser("$(scriptdir)/$i.jl")
         open(file, "w") do f
             write(f, string(ex))
         end
         return file
     end
 
-    script = `$(jobarray_script_prefix)/\$\{PBS_ARRAY_INDEX\}.jl`
-    logfile = `$(LOGDIR)/\$\{PBS_JOBID\}_$(ID).log`
+    script = `$(scriptdir)/\$\{PBS_ARRAY_INDEX\}.jl`
+    logdir = `$(LOGDIR)/\$\{MAIN_JOBID\}\[\].log`
+    logfile = `$(to_string(logdir))/\$\{PBS_ARRAY_INDEX\}.log`
     exeflags = `$exeflags --heap-size-hint=$(ceil(Int, mem/2))G`
 
     julia_cmd = build_julia_command(; exeflags, project, script, logfile, mem_sandbox,
@@ -341,26 +359,21 @@ function runscripts(exprs;
     #PBS -J 1-$N
     source $(ENV["HOME"])/.bashrc
     cd $project
+    MAIN_JOBID=\${PBS_JOBID%\\[*}
+    mkdir -p "$(to_string(logdir))"
     $(to_string(julia_cmd))
     """
 
-    qsub_file = first(mktemp(LOGDIR; cleanup = false))
+    qsub_file = first(mktemp(scriptdir; cleanup = false))
     open(qsub_file, "w") do f
         write(f, cmd)
     end
-    qsub = "source $(ENV["HOME"])/.bashrc && /usr/physics/pbspro/bin/qsub $(string(qsub_flags)) $(Base.shell_escape(qsub_file))"
+    queue = isempty(queue) ? queue : "-q $(Base.shell_escape(queue))"
+    qsub = "source $(ENV["HOME"])/.bashrc && /usr/physics/pbspro/bin/qsub $(string(qsub_flags)) $queue $(Base.shell_escape(qsub_file))"
     qsub_cmd = `ssh headnode "$qsub"`
     @info "Submitting array job with id $uID (logdir: $LOGDIR)"
-    run(qsub_cmd)
-    return nothing
-end
-
-function runscript(expr::Expr; kwargs...)
-    file = first(mktemp(LOGDIR; cleanup = false))
-    open(file, "w") do f
-        write(f, string(expr))
-    end
-    runscript(file; kwargs...)
+    jobid = capture_jobid(qsub_cmd)
+    return jobid
 end
 
 function selfdestruct()

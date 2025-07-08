@@ -1,10 +1,11 @@
 # * Simple test script to write the current date to a given file.
-using Dates
+using UUIDs
+
 file = length(ARGS) == 0 ? tempname() : first(ARGS)
+key = length(ARGS) > 1 ? ARGS[2] : string(UUIDs.uuid4())
 
 mkpath(first(Base.splitdir(file)))
-day = Dates.today()
 open(file, "w") do io
-    write(io, "$(day)\n")
+    write(io, "$(key)")
 end
-@info "Wrote current date $(day) to file: $(abspath(file))"
+print("$(abspath(file)): $key")

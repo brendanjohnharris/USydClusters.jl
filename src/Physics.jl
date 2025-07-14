@@ -14,9 +14,15 @@ struct PBSProManager <: ClusterManager
     walltime::Integer # Hours
     queue::Any
     project::Any
+    qsubflags::Any
 end
 function PBSProManager(np, ncpus, mem, walltime, queue; kwargs...)
-    PBSProManager(np, ncpus, mem, walltime, queue, ``; kwargs...)
+    PBSProManager(np, ncpus, mem, walltime, queue, ``, ``, ``; kwargs...)
+end
+function PBSProManager(np = 1; ncpus = 8, mem = 16, walltime = 24, queue = ``,
+                       project = ``, qsubflags = ``, kwargs...)
+    return PBSProManager(np, ncpus, mem, walltime, queue, project, qsubflags;
+                         kwargs...)
 end
 
 function ClusterManagers.launch(manager::PBSProManager,
@@ -31,43 +37,61 @@ function ClusterManagers.launch(manager::PBSProManager,
         mem = manager.mem
         walltime = manager.walltime
         queue = manager.queue
+        if isnothing(queue)
+            queue = ``
+        end
+        if !isempty(queue)
+            queue = `-q $(queue)`
+        end
+
         project = manager.project
-        @info "Activating worker project $project"
+        qsubflags = manager.qsubflags
+        @debug "Activating worker project $project"
 
-        jobname = `julia-$(getpid())`
-
-        Jcmd = np > 1 ? `-J 1-$np` : ``
-        if isempty(project)
+        ID = getpid()
+        if isempty(project) || isnothing(project)
             project = dirname(Base.active_project())
         end
 
+        if np == 1
+            Jcmd = ""
+            logdir = `$(LOGDIR)`
+            logfile = `$(to_string(logdir))/\$\{MAIN_JOBID\}.$(ID).log`
+        elseif np > 1
+            Jcmd = "#PBS -J 1-$np"
+            logdir = `$(LOGDIR)/\$\{MAIN_JOBID\}\[\].$(ID).log`
+            logfile = `$(to_string(logdir))/\$\{PBS_ARRAY_INDEX\}.log`
+        else
+            throw(ArgumentError("np must be a positive integer, got $np"))
+        end
+
         script = ClusterManagers.worker_arg()
+        exeflags = `$exeflags --heap-size-hint=$(ceil(Int, mem/2))G`
         julia_cmd = build_julia_command(; exename, exeflags, project, script, logfile)
 
-        jobname = Base.shell_escape(jobname)
-
+        ID = Base.shell_escape("$(ID)")
         cmd = """#!/bin/bash
-        #PBS -N $jobname
+        #PBS -N julia-$ID
         #PBS -V
         #PBS -j oe
         #PBS -m n
-        #PBS -o $(LOGDIR)/$jobname.final.log
-        #PBS $(Base.shell_escape(Jcmd))
+        #PBS -o $(LOGDIR)/$ID.final.log
+        $(Jcmd)
         $(format_pbs_resources(ncpus, mem, walltime))
         cd $dir
         source $(ENV["HOME"])/.bashrc
+        MAIN_JOBID=\${PBS_JOBID%\\[*}
+        MAIN_JOBID=\${MAIN_JOBID%.*}
+        mkdir -p "$(to_string(logdir))"
         $(to_string(julia_cmd))
         """
+        @debug cmd
 
         f = tempname(LOGDIR)
         write(f, cmd)
 
         @debug(cmd)
-        if isempty(queue)
-            _qsub = "/usr/physics/pbspro/bin/qsub"
-        else
-            _qsub = "/usr/physics/pbspro/bin/qsub -q $(Base.shell_escape(queue))"
-        end
+        _qsub = `/usr/physics/pbspro/bin/qsub $(queue) $(qsubflags)`
         qsub = "source $(ENV["HOME"])/.bashrc > /dev/null && $(Base.shell_escape(_qsub)) $(Base.shell_escape(f))"
 
         qsub_cmd = pipeline(`ssh headnode "$qsub"`)
@@ -78,8 +102,19 @@ function ClusterManagers.launch(manager::PBSProManager,
             throw(error()) # qsub already gives a message
         end
         line = readline(out)
-        id = chomp(split(line, '.')[1])
+        id = split(line, '.') |> first |> chomp
+        id = replace(id, r"\[\]" => "")
         @debug id
+
+        # * Reconstruct actual log file names from jobid
+        if np == 1
+            logfile = `$(to_string(logdir))/$id.$(ID).log`
+            fnames = ["$(to_string(logfile))"]
+        else
+            logdir = `$(LOGDIR)/$id\[\].$(ID).log`
+            fnames = ["$(to_string(logdir))/$i.log" for i in 1:np]
+        end
+
         if endswith(id, "[]")
             id = id[1:(end - 2)]
         end
@@ -87,18 +122,9 @@ function ClusterManagers.launch(manager::PBSProManager,
             error("Job id could not be parse from worker output '$line'. Please make sure tour `.bashrc` file does not print anything to stdout.")
         end
 
-        function filenames(i)
-            if np > 1
-                ["$LOGDIR/$id[$i].log"]
-            else
-                ["$LOGDIR/$id.log"]
-            end
-        end
-
         println("Job $id in queue.")
         for i in 1:np
             # wait for each output stream file to get created
-            fnames = filenames(i)
             j = 0
             if haskey(ENV, "JULIA_WORKER_TIMEOUT")
                 hosttimeout = tryparse(Int, ENV["JULIA_WORKER_TIMEOUT"])
@@ -108,9 +134,8 @@ function ClusterManagers.launch(manager::PBSProManager,
             start_time = time()
             while (j = findfirst(x -> isfile(x), fnames)) === nothing &&
                 (time() - start_time) < hosttimeout
-                sleep(0.5)
-                @debug "Waiting for worker $i to connect at $fnames"
-                @debug isfile(fnames[1])
+                # @debug "Waiting for worker $i to connect at $fnames"
+                sleep(1)
             end
             (j = findfirst(x -> isfile(x), fnames)) === nothing &&
                 error("Worker $i did not connect at $fnames after $hosttimeout seconds.")
@@ -121,8 +146,8 @@ function ClusterManagers.launch(manager::PBSProManager,
             host = readline(fname)
             start_time = time()
             while isempty(host) && (time() - start_time) < hosttimeout
-                sleep(0.5)
-                @debug "Waiting for worker $i to write hostname to $fname"
+                sleep(1)
+                # @debug "Waiting for worker $i to write hostname to $fname"
                 host = readline(fname)
             end
             isempty(host) &&
@@ -142,11 +167,13 @@ function ClusterManagers.launch(manager::PBSProManager,
             notify(c)
         end
         rm(f, force = true)
-        println("Running. See stdout of children at $LOGDIR (jobid: $id)")
+        logloc = np == 1 ? logfile : logdir
+        println("Running. See stdout of children at $logloc")
 
     catch e
         println("Error launching workers")
         println(e)
+        rm(f, force = true)
     end
 end
 
@@ -172,17 +199,12 @@ function ClusterManagers.kill(manager::PBSProManager, id::Int64, config::WorkerC
     # end
 end
 
-function addprocs(np::Integer, ncpus, mem, walltime; qsub_flags = ``, project = ``,
-                  kwargs...)
-    ClusterManagers.addprocs(PBSProManager(np, ncpus, mem, walltime, qsub_flags, project);
-                             enable_threaded_blas = true, kwargs...)
-end
-
-function addprocs(np::Integer; ncpus = 10, mem = 31, walltime = 48, qsub_flags = ``,
-                  project = ``,
-                  kwargs...)
-    ClusterManagers.addprocs(PBSProManager(np, ncpus, mem, walltime, qsub_flags, project);
-                             enable_threaded_blas = true, kwargs...)
+function addprocs(np::Integer; ncpus = 8, mem = 16, walltime = 24, queue = ``, project = ``,
+                  qsubflags = ``, kwargs...)
+    ClusterManagers.addprocs(PBSProManager(np; ncpus, mem, walltime, queue, project,
+                                           qsubflags);
+                             enable_threaded_blas = true,
+                             kwargs...)
 end
 
 function addprocs(f::Function; preamble = nothing, args, kwargs, _kwargs...)
@@ -273,7 +295,7 @@ function runscript(script::String;
                    ncpus = 10,
                    mem = 31,
                    walltime = 48,
-                   qsub_flags = "",
+                   qsubflags = "",
                    project = ``,
                    exeflags = ``,
                    queue = ``,
@@ -285,7 +307,7 @@ function runscript(script::String;
     julia_cmd = build_julia_command(; exeflags, project, script, logfile, kwargs...)
 
     cmd = """#!/bin/bash
-    #PBS -N $(ID)
+    #PBS -N julia-$(ID)
     #PBS -V
     #PBS -j oe
     #PBS -m n
@@ -300,7 +322,7 @@ function runscript(script::String;
         write(f, cmd)
     end
     queue = isempty(queue) ? queue : "-q $(Base.shell_escape(queue))"
-    qsub = "source $(ENV["HOME"])/.bashrc && /usr/physics/pbspro/bin/qsub $(string(qsub_flags)) $queue $(Base.shell_escape(qsub_file))"
+    qsub = "source $(ENV["HOME"])/.bashrc && /usr/physics/pbspro/bin/qsub $(string(qsubflags)) $queue $(Base.shell_escape(qsub_file))"
     qsub_cmd = `ssh headnode "$qsub"`
     jobid = capture_jobid(qsub_cmd)
     return jobid, replace(to_string(logfile), r"\$\{PBS_JOBID\}" => "$jobid.headnode")
@@ -314,19 +336,12 @@ function runscript(expr::Expr; kwargs...)
     runscript(file; kwargs...)
 end
 
-function runscripts(exprs;
-                    ncpus = 10,
-                    mem = 31,
-                    walltime = 48,
-                    qsub_flags = "",
-                    project = ``,
-                    exeflags = ``,
-                    queue = ``,
-                    kwargs...)
-    uID = rand(UInt16) |> Int
+function runscripts(exprs; kwargs...)
+    ID = rand(UInt16) |> Int
+    ID = "runscripts_$(ID)"
     N = length(exprs)
 
-    scriptdir = "$(LOGDIR)/$(uID).script"
+    scriptdir = "$(LOGDIR)/$(ID).script"
 
     mkpath(expanduser(scriptdir))
     scriptfiles = map(enumerate(exprs)) do (i, ex)
@@ -336,24 +351,37 @@ function runscripts(exprs;
         end
         return file
     end
+    runscripts(scriptdir; ID, kwargs...)
+end
 
+function runscripts(scriptdir::String; # The files should be named 1.jl, 2.jl, etc.
+                    ncpus = 10,
+                    mem = 31,
+                    walltime = 48,
+                    qsubflags = "",
+                    project = ``,
+                    exeflags = ``,
+                    queue = ``,
+                    ID = rand(UInt16) |> Int,
+                    kwargs...)
     script = `$(scriptdir)/\$\{PBS_ARRAY_INDEX\}.jl`
-    logdir = `$(LOGDIR)/\$\{MAIN_JOBID\}\[\].log`
+    logdir = `$(LOGDIR)/\$\{MAIN_JOBID\}\[\].$(ID).log`
     logfile = `$(to_string(logdir))/\$\{PBS_ARRAY_INDEX\}.log`
     exeflags = `$exeflags --heap-size-hint=$(ceil(Int, mem/2))G`
 
     julia_cmd = build_julia_command(; exeflags, project, script, logfile, kwargs...)
     cmd = """#!/bin/bash
-    #PBS -N $(uID)
+    #PBS -N julia-$(ID)
     #PBS -V
     #PBS -j oe
     #PBS -m n
-    #PBS -o $(LOGDIR)/$uID.final.log
+    #PBS -o $(LOGDIR)/$ID.final.log
     $(format_pbs_resources(ncpus, mem, walltime))
     #PBS -J 1-$N
     source $(ENV["HOME"])/.bashrc
     cd $project
     MAIN_JOBID=\${PBS_JOBID%\\[*}
+    MAIN_JOBID=\${MAIN_JOBID%.*}
     mkdir -p "$(to_string(logdir))"
     $(to_string(julia_cmd))
     """
@@ -363,9 +391,9 @@ function runscripts(exprs;
         write(f, cmd)
     end
     queue = isempty(queue) ? queue : "-q $(Base.shell_escape(queue))"
-    qsub = "source $(ENV["HOME"])/.bashrc && /usr/physics/pbspro/bin/qsub $(string(qsub_flags)) $queue $(Base.shell_escape(qsub_file))"
+    qsub = "source $(ENV["HOME"])/.bashrc && /usr/physics/pbspro/bin/qsub $(string(qsubflags)) $queue $(Base.shell_escape(qsub_file))"
     qsub_cmd = `ssh headnode "$qsub"`
-    @info "Submitting array job with id $uID (logdir: $LOGDIR)"
+    @info "Submitting array job with name julia-$ID (logdir: $LOGDIR)"
     jobid = capture_jobid(qsub_cmd)
     return jobid
 end

@@ -1,6 +1,7 @@
 using USydClusters
 import USydClusters: Physics
 using Test
+using Distributed
 using UUIDs
 
 ENV["JULIA_DEBUG"] = "USydClusters"
@@ -103,7 +104,7 @@ end
 
 @testset "addproc" begin
     try
-        ourprocs = USydClusters.Physics.addprocs(1; mem = 22, ncpus = 4, walltime = 1,
+        ourprocs = USydClusters.Physics.addprocs(1; mem = 4, ncpus = 1, walltime = 1,
                                                  queue = "h100")
         @test ourprocs == [2]
         @test nprocs() == 2      # Total processes should be main (1) + new (1)
@@ -118,7 +119,6 @@ end
 
         rmprocs(ourprocs)
         @test nprocs() == 1
-        @test isempty(workers())
     finally
         if nprocs() > 1
             rmprocs()
@@ -127,22 +127,22 @@ end
 end
 @testset "addprocs" begin
     try
-        ourprocs = USydClusters.Physics.addprocs(2; mem = 8, ncpus = 4, walltime = 1,
+        np = 2
+        ourprocs = USydClusters.Physics.addprocs(2; mem = 4, ncpus = 1, walltime = 1,
                                                  qsubflags = `-q h100`, timeout = 120)
-        @test ourprocs == [2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
-        @test nprocs() == 11      # Total processes should be main (1) + new (10)
-        @test workers() == [2, 3, 4, 5, 6, 7, 8, 9, 10, 11]   # The list of worker IDs should match
-
-        @test remotecall_fetch(myid, ourprocs[1]) == 2
+        @test nprocs() == np + 1      # Total processes should be main (1) + new (10)
+        @test workers() == ourprocs   # The list of worker IDs should match
 
         @everywhere begin
             f() = 13^3
         end
-        @test remotecall_fetch(f, ourprocs[1]) == 2197
+        map(ourprocs) do proc
+            @test remotecall_fetch(myid, proc) == proc
+            @test remotecall_fetch(f, proc) == 2197
+        end
 
         rmprocs(ourprocs)
         @test nprocs() == 1
-        @test isempty(workers())
     finally
         if nprocs() > 1
             rmprocs()

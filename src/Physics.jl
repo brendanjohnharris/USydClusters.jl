@@ -60,7 +60,7 @@ function ClusterManagers.launch(manager::PBSProManager,
         elseif np > 1
             Jcmd = "#PBS -J 1-$np"
             logdir = `$(LOGDIR)/\$\{MAIN_JOBID\}\[\].$(ID).log`
-            logfile = `$(to_string(logdir))/\$\{PBS_ARRAY_INDEX\}.log`
+            logfile = `$(to_string(logdir)).\$\{PBS_ARRAY_INDEX\}.log`
         else
             throw(ArgumentError("np must be a positive integer, got $np"))
         end
@@ -112,7 +112,7 @@ function ClusterManagers.launch(manager::PBSProManager,
             fnames = ["$(to_string(logfile))"]
         else
             logdir = `$(LOGDIR)/$id\[\].$(ID).log`
-            fnames = ["$(to_string(logdir))/$i.log" for i in 1:np]
+            fnames = ["$(to_string(logdir)).$i.log" for i in 1:np]
         end
 
         if endswith(id, "[]")
@@ -125,21 +125,19 @@ function ClusterManagers.launch(manager::PBSProManager,
         println("Job $id in queue.")
         for i in 1:np
             # wait for each output stream file to get created
-            j = 0
+            fname = fnames[i]
             if haskey(ENV, "JULIA_WORKER_TIMEOUT")
                 hosttimeout = tryparse(Int, ENV["JULIA_WORKER_TIMEOUT"])
             else
                 hosttimeout = 480
             end
             start_time = time()
-            while (j = findfirst(x -> isfile(x), fnames)) === nothing &&
-                (time() - start_time) < hosttimeout
+            while !isfile(fname) && (time() - start_time) < hosttimeout
                 # @debug "Waiting for worker $i to connect at $fnames"
                 sleep(1)
             end
-            (j = findfirst(x -> isfile(x), fnames)) === nothing &&
-                error("Worker $i did not connect at $fnames after $hosttimeout seconds.")
-            fname = fnames[j]
+            !isfile(fname) &&
+                error("Worker $i did not connect at $fname after $hosttimeout seconds.")
 
             # Hack to get Base to get the host:port, the Julia process has already started.
             # cmd = `tail -f $fname`
@@ -339,7 +337,6 @@ end
 function runscripts(exprs; kwargs...)
     ID = rand(UInt16) |> Int
     ID = "runscripts_$(ID)"
-    N = length(exprs)
 
     scriptdir = "$(LOGDIR)/$(ID).script"
 
@@ -368,6 +365,7 @@ function runscripts(scriptdir::String; # The files should be named 1.jl, 2.jl, e
     logdir = `$(LOGDIR)/\$\{MAIN_JOBID\}\[\].$(ID).log`
     logfile = `$(to_string(logdir))/\$\{PBS_ARRAY_INDEX\}.log`
     exeflags = `$exeflags --heap-size-hint=$(ceil(Int, mem/2))G`
+    N = length(readdir(scriptdir))
 
     julia_cmd = build_julia_command(; exeflags, project, script, logfile, kwargs...)
     cmd = """#!/bin/bash

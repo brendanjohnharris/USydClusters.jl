@@ -272,7 +272,7 @@ function runscript(script::String;
                    ncpus = 10,
                    mem = 31,
                    walltime = 48,
-                   qsubflags = "",
+                   qsubflags = ``,
                    project = ``,
                    exeflags = ``,
                    queue = ``,
@@ -299,7 +299,7 @@ function runscript(script::String;
         write(f, cmd)
     end
     queue = isempty(queue) ? queue : "-q $(Base.shell_escape(queue))"
-    qsub = "source $(ENV["HOME"])/.bashrc && /usr/physics/pbspro/bin/qsub $(string(qsubflags)) $queue $(Base.shell_escape(qsub_file))"
+    qsub = "source $(ENV["HOME"])/.bashrc && /usr/physics/pbspro/bin/qsub $(to_string(qsubflags)) $queue $(Base.shell_escape(qsub_file))"
     qsub_cmd = `ssh headnode "$qsub"`
     jobid = capture_jobid(qsub_cmd)
     return jobid, replace(to_string(logfile), r"\$\{PBS_JOBID\}" => "$jobid.headnode")
@@ -334,7 +334,7 @@ function runscripts(scriptdir::String; # The files should be named 1.jl, 2.jl, e
                     ncpus = 10,
                     mem = 31,
                     walltime = 48,
-                    qsubflags = "",
+                    qsubflags = ``,
                     project = ``,
                     exeflags = ``,
                     queue = ``,
@@ -368,7 +368,7 @@ function runscripts(scriptdir::String; # The files should be named 1.jl, 2.jl, e
         write(f, cmd)
     end
     queue = isempty(queue) ? queue : "-q $(Base.shell_escape(queue))"
-    qsub = "source $(ENV["HOME"])/.bashrc && /usr/physics/pbspro/bin/qsub $(string(qsubflags)) $queue $(Base.shell_escape(qsub_file))"
+    qsub = "source $(ENV["HOME"])/.bashrc && /usr/physics/pbspro/bin/qsub $(to_string(qsubflags)) $queue $(Base.shell_escape(qsub_file))"
     qsub_cmd = `ssh headnode "$qsub"`
     @info "Submitting array job with name julia-$ID (logdir: $LOGDIR)"
     jobid = capture_jobid(qsub_cmd)

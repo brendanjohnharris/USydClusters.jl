@@ -25,6 +25,10 @@ function PBSProManager(np = 1; ncpus = 8, mem = 16, walltime = 24, queue = ``,
                          kwargs...)
 end
 
+function ClusterManagers.manage(manager::PBSProManager,
+                                id::Int64, config::WorkerConfig, op::Symbol)
+end
+
 function ClusterManagers.launch(manager::PBSProManager,
                                 params::Dict, instances_arr::Array, c::Condition)
     try
@@ -175,26 +179,9 @@ function ClusterManagers.launch(manager::PBSProManager,
     end
 end
 
-function ClusterManagers.manage(manager::PBSProManager,
-                                id::Int64, config::WorkerConfig, op::Symbol)
-end
-
 function ClusterManagers.kill(manager::PBSProManager, id::Int64, config::WorkerConfig)
-    @info "Killing process $id"
+    @debug "Killing process $id"
     remotecall(exit, id)
-    # close(config.io)
-    ## pbsid = Distributed.map_pid_wrkr[id].config.userdata[:job]
-    #pbsid = split(ENV["PBS_JOBID"], ".") |> first
-    #run(`ssh headnode "/usr/physics/pbspro/bin/qdel $pbsid"`)
-    #@info "Killed process $id, job $pbsid."
-
-    # * Delete all tail commands associated with this job id
-    # pids = run(`ps aux \| grep tail \| grep head`)
-    # * Now delete any pids matching this pbs id
-
-    # if isfile(config.userdata[:iofile])
-    #     rm(config.userdata[:iofile])
-    # end
 end
 
 function addprocs(np::Integer; ncpus = 8, mem = 16, walltime = 24, queue = ``, project = ``,
@@ -205,83 +192,76 @@ function addprocs(np::Integer; ncpus = 8, mem = 16, walltime = 24, queue = ``, p
                              kwargs...)
 end
 
-function addprocs(f::Function; preamble = nothing, args, kwargs, _kwargs...)
-    p = addprocs(1; _kwargs...) |> only
-    if !isnothing(preamble)
-        if !(preamble isa Expr)
-            preamble = Meta.parse(preamble)
-        end
-        # @everywhere p $preamble
-        o = @spawnat p eval(preamble)
-        wait(o)
-    end
-    # function func(f, args...; kwargs...)
-    #     try
-    #         f(args...; kwargs...)
-    #     catch e
-    #         e
-    #     end
-    # end
-    o = remotecall_fetch(f, p, args...; kwargs...)
-    @info "Worker $p completed successfully, removing."
-    # remotecall(exit, p)
-    # close(Distributed.map_pid_wrkr[p].config.io)
-    # if isfile(Distributed.map_pid_wrkr[p].config.userdata[:iofile])
-    #     rm(Distributed.map_pid_wrkr[p].config.userdata[:iofile])
-    # end
-    pbsid = Distributed.map_pid_wrkr[p].config.userdata[:job]
-    # @info pbsid
-    run(`ssh headnode "/usr/physics/pbspro/bin/qdel $pbsid"`)
-    @info "Worker $p removed successfully."
-    return o
-end
-function addprocs(f::Function, itr; preamble = nothing, args = (), kwargs = (;), _kwargs...)
-    O = Vector{Any}(undef, length(itr))
-    procs = addprocs(length(itr); _kwargs...)
-    if !isnothing(preamble)
-        if !(preamble isa Expr)
-            preamble = Meta.parse(preamble)
-        end
-        @everywhere procs $preamble
-    end
-    @sync for i in eachindex(itr)
-        p = procs[i]
-        # function func(f, args...; kwargs...)
-        #     try
-        #         f(args...; kwargs...)
-        #     catch e
-        #         e
-        #     end
-        # end
-        o = @async remotecall_fetch(f, p, (itr[i], args...); kwargs...)
-        O[i] = o
-    end
-    @info "Workers completed successfully, removing."
-    for p in procs
-        pbsid = Distributed.map_pid_wrkr[p].config.userdata[:job]
-        run(`ssh headnode "/usr/physics/pbspro/bin/qdel $pbsid"`)
-        @info "Job $pbsid removed successfully."
-    end
-    return O
-end
-function addprocs(f::Function, itr, batchsize::Integer; args = (), kwargs = (;),
-                  _kwargs...)
-    if batchsize == 1
-        O = Vector{Any}(undef, length(itr))
-        for i in eachindex(itr)
-            o = @async addprocs(f; args = (itr[i], args...), kwargs = kwargs, _kwargs...)
-            O[i] = o
-        end
-    else # This helps because precompilation always takes place on the calling process, so want to limit the number of times it happens, but still asynchronously start jobs
-        batches = collect(Iterators.partition(eachindex(itr), batchsize))
-        O = Vector{Any}(undef, length(batches))
-        for bi in eachindex(batches)
-            o = @async addprocs(f, itr[batches[bi]]; args, kwargs = kwargs, _kwargs...)
-            O[bi] = o
-        end
-    end
-    return O
-end
+# function addprocs(f::Function; preamble = nothing, args = (), kwargs = (;), _kwargs...)
+#     p = addprocs(1; _kwargs...) |> only
+#     try
+#         if !isnothing(preamble)
+#             if !(preamble isa Expr)
+#                 preamble = Meta.parse(preamble)
+#             end
+#             o = @spawnat p eval(preamble)
+#             wait(o)
+#         end
+#         o = remotecall_fetch(f, p, args...; kwargs...)
+#         @debug "Worker $p completed successfully, removing."
+#         # pbsid = Distributed.map_pid_wrkr[p].config.userdata[:job]
+#         # run(`ssh headnode "/usr/physics/pbspro/bin/qdel $pbsid"`)
+#     catch e
+#         @error "Error in worker $p: $e"
+#         o = nothing
+#     finally
+#         rmprocs(p)
+#         @debug "Worker $p removed successfully."
+#     end
+#     return o
+# end
+# function addprocs(f::Function, itr; preamble = nothing, args = (), kwargs = (;), _kwargs...)
+#     O = Vector{Any}(undef, length(itr))
+#     procs = addprocs(length(itr); _kwargs...)
+#     if !isnothing(preamble)
+#         if !(preamble isa Expr)
+#             preamble = Meta.parse(preamble)
+#         end
+#         @everywhere procs $preamble
+#     end
+#     @sync for i in eachindex(itr)
+#         p = procs[i]
+#         # function func(f, args...; kwargs...)
+#         #     try
+#         #         f(args...; kwargs...)
+#         #     catch e
+#         #         e
+#         #     end
+#         # end
+#         o = @async remotecall_fetch(f, p, (itr[i], args...); kwargs...)
+#         O[i] = o
+#     end
+#     @info "Workers completed successfully, removing."
+#     for p in procs
+#         pbsid = Distributed.map_pid_wrkr[p].config.userdata[:job]
+#         run(`ssh headnode "/usr/physics/pbspro/bin/qdel $pbsid"`)
+#         @info "Job $pbsid removed successfully."
+#     end
+#     return O
+# end
+# function addprocs(f::Function, itr, batchsize::Integer; args = (), kwargs = (;),
+#                   _kwargs...)
+#     if batchsize == 1
+#         O = Vector{Any}(undef, length(itr))
+#         for i in eachindex(itr)
+#             o = @async addprocs(f; args = (itr[i], args...), kwargs = kwargs, _kwargs...)
+#             O[i] = o
+#         end
+#     else # This helps because precompilation always takes place on the calling process, so want to limit the number of times it happens, but still asynchronously start jobs
+#         batches = collect(Iterators.partition(eachindex(itr), batchsize))
+#         O = Vector{Any}(undef, length(batches))
+#         for bi in eachindex(batches)
+#             o = @async addprocs(f, itr[batches[bi]]; args, kwargs = kwargs, _kwargs...)
+#             O[bi] = o
+#         end
+#     end
+#     return O
+# end
 
 function capture_jobid(cmd)
     output = read(cmd, String)

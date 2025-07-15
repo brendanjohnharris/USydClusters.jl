@@ -117,6 +117,18 @@ end
         end
         @test remotecall_fetch(f, ourprocs[1]) == 2197
 
+        jobid = fetch(@spawnat only(ourprocs) ENV["PBS_JOBID"])
+
+        rmprocs(ourprocs)
+        stillthere = true
+        start_time = time()
+        while stillthere && time() - start_time < 30
+            output = read(`qstat`, String)
+            stillthere = occursin(string(jobid), output)
+            sleep(1)
+        end
+        @test !stillthere
+
         rmprocs(ourprocs)
         @test nprocs() == 1
     finally
@@ -129,7 +141,7 @@ end
     try
         np = 2
         ourprocs = USydClusters.Physics.addprocs(2; mem = 4, ncpus = 1, walltime = 1,
-                                                 qsubflags = `-q h100`, timeout = 120)
+                                                 queue = `h100`, timeout = 120)
         @test nprocs() == np + 1      # Total processes should be main (1) + new (10)
         @test workers() == ourprocs   # The list of worker IDs should match
 
@@ -141,7 +153,24 @@ end
             @test remotecall_fetch(f, proc) == 2197
         end
 
+        # Parse the output of qstat and check the job is gone
+        jobids = map(ourprocs) do proc
+            id = @spawnat proc ENV["PBS_JOBID"]
+            return fetch(id)
+        end
+
         rmprocs(ourprocs)
+        stillthere = true
+        start_time = time()
+        while stillthere && time() - start_time < 30
+            output = read(`qstat -t`, String)
+            stillaround = map(jobids) do jobid
+                occursin(string(jobid), output)
+            end
+            stillthere = any(stillaround)
+            sleep(1)
+        end
+        @test !stillthere
         @test nprocs() == 1
     finally
         if nprocs() > 1

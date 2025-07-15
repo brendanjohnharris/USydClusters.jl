@@ -171,7 +171,6 @@ function ClusterManagers.launch(manager::PBSProManager,
         rm(f, force = true)
         logloc = np == 1 ? logfile : logdir
         println("Running. See stdout of children at $logloc")
-
     catch e
         println("Error launching workers")
         println(e)

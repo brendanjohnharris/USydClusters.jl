@@ -140,8 +140,8 @@ end
 @testset "addprocs" begin
     try
         np = 2
-        ourprocs = USydClusters.Physics.addprocs(2; mem = 4, ncpus = 1, walltime = 1,
-                                                 queue = `h100`, timeout = 120)
+        ourprocs = USydClusters.Physics.addprocs(np; mem = 4, ncpus = 1, walltime = 1,
+                                                 queue = `taiji`)
         @test nprocs() == np + 1      # Total processes should be main (1) + new (10)
         @test workers() == ourprocs   # The list of worker IDs should match
 

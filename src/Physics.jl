@@ -1,10 +1,12 @@
 module Physics
 using Distributed
-using ClusterManagers
 import USydClusters: build_julia_command, format_pbs_resources, LOGDIR, to_string
-import ClusterManagers.worker_arg
-import ClusterManagers.ClusterManager
-import ClusterManagers.WorkerConfig
+
+worker_cookie() = begin
+    Distributed.init_multi()
+    Distributed.cluster_cookie()
+end
+worker_arg() = `--worker=$(worker_cookie())`
 
 export PBSProManager, addprocs
 struct PBSProManager <: ClusterManager
@@ -25,12 +27,12 @@ function PBSProManager(np = 1; ncpus = 8, mem = 16, walltime = 24, queue = ``,
                          kwargs...)
 end
 
-function ClusterManagers.manage(manager::PBSProManager,
-                                id::Int64, config::WorkerConfig, op::Symbol)
+function Distributed.manage(manager::PBSProManager,
+                            id::Int64, config::WorkerConfig, op::Symbol)
 end
 
-function ClusterManagers.launch(manager::PBSProManager,
-                                params::Dict, instances_arr::Array, c::Condition)
+function Distributed.launch(manager::PBSProManager,
+                            params::Dict, instances_arr::Array, c::Condition)
     try
         dir = params[:dir]
         exename = params[:exename]
@@ -64,12 +66,12 @@ function ClusterManagers.launch(manager::PBSProManager,
         elseif np > 1
             Jcmd = "#PBS -J 1-$np"
             logdir = `$(LOGDIR)/\$\{MAIN_JOBID\}\[\].$(ID).log`
-            logfile = `$(to_string(logdir)).\$\{PBS_ARRAY_INDEX\}.log`
+            logfile = `$(to_string(logdir))/\$\{PBS_ARRAY_INDEX\}.log`
         else
             throw(ArgumentError("np must be a positive integer, got $np"))
         end
 
-        script = ClusterManagers.worker_arg()
+        script = worker_arg()
         exeflags = `$exeflags --heap-size-hint=$(ceil(Int, mem/2))G`
         julia_cmd = build_julia_command(; exename, exeflags, project, script, logfile)
 
@@ -116,7 +118,7 @@ function ClusterManagers.launch(manager::PBSProManager,
             fnames = ["$(to_string(logfile))"]
         else
             logdir = `$(LOGDIR)/$id\[\].$(ID).log`
-            fnames = ["$(to_string(logdir)).$i.log" for i in 1:np]
+            fnames = ["$(to_string(logdir))/$i.log" for i in 1:np]
         end
 
         if endswith(id, "[]")
@@ -159,8 +161,6 @@ function ClusterManagers.launch(manager::PBSProManager,
             host = host[3]
 
             config = WorkerConfig()
-
-            # config.io = open(detach(cmd))
             config.host = host
             config.port = port
 
@@ -171,24 +171,26 @@ function ClusterManagers.launch(manager::PBSProManager,
         rm(f, force = true)
         logloc = np == 1 ? logfile : logdir
         println("Running. See stdout of children at $logloc")
+        return id
     catch e
         println("Error launching workers")
         println(e)
         rm(f, force = true)
+        return false
     end
 end
 
-function ClusterManagers.kill(manager::PBSProManager, id::Int64, config::WorkerConfig)
+function Distributed.kill(manager::PBSProManager, id::Int64, config::WorkerConfig)
     @debug "Killing process $id"
     remotecall(exit, id)
 end
 
 function addprocs(np::Integer; ncpus = 8, mem = 16, walltime = 24, queue = ``, project = ``,
                   qsubflags = ``, kwargs...)
-    ClusterManagers.addprocs(PBSProManager(np; ncpus, mem, walltime, queue, project,
-                                           qsubflags);
-                             enable_threaded_blas = true,
-                             kwargs...)
+    Distributed.addprocs(PBSProManager(np; ncpus, mem, walltime, queue, project,
+                                       qsubflags);
+                         enable_threaded_blas = true,
+                         kwargs...)
 end
 
 # function addprocs(f::Function; preamble = nothing, args = (), kwargs = (;), _kwargs...)

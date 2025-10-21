@@ -100,7 +100,7 @@ function Distributed.launch(manager::PBSProManager,
         _qsub = `/usr/physics/pbspro-14.0.1/bin/qsub $(queue) $(qsubflags)`
         qsub = "source $(ENV["HOME"])/.bashrc > /dev/null && $(Base.shell_escape(_qsub)) $(Base.shell_escape(f))"
 
-        qsub_cmd = pipeline(`ssh headnode "$qsub"`)
+        qsub_cmd = pipeline(`$qsub`) # Sometimes need `ssh headnode '$qsub'`
         @debug qsub_cmd
         out = open(qsub_cmd)
         @debug out

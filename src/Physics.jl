@@ -100,7 +100,7 @@ function Distributed.launch(manager::PBSProManager,
         _qsub = `/opt/pbs/bin/qsub $(queue) $(qsubflags)`
         qsub = "source $(ENV["HOME"])/.bashrc > /dev/null && $(Base.shell_escape(_qsub)) $(Base.shell_escape(f))"
 
-        qsub_cmd = pipeline(`ssh headnode "sh -c $qsub"`)
+        qsub_cmd = pipeline(`ssh headnode '$qsub'`)
         @debug qsub_cmd
         out = open(qsub_cmd)
         @debug out
@@ -302,7 +302,7 @@ function runscript(script::String;
     end
     queue = isempty(queue) ? queue : "-q $(Base.shell_escape(queue))"
     qsub = "source $(ENV["HOME"])/.bashrc && /opt/pbs/bin/qsub $(to_string(qsubflags)) $queue $(Base.shell_escape(qsub_file))"
-    qsub_cmd = `ssh headnode "sh -c $qsub"`
+    qsub_cmd = `ssh headnode '$qsub'`
     jobid = capture_jobid(qsub_cmd)
     return jobid, replace(to_string(logfile), r"\$\{PBS_JOBID\}" => "$jobid.headnode")
 end
@@ -371,7 +371,7 @@ function runscripts(scriptdir::String; # The files should be named 1.jl, 2.jl, e
     end
     queue = isempty(queue) ? queue : "-q $(Base.shell_escape(queue))"
     qsub = "source $(ENV["HOME"])/.bashrc && /opt/pbs/bin/qsub $(to_string(qsubflags)) $queue $qsub_file"
-    qsub_cmd = `ssh headnode "sh -c $qsub"`
+    qsub_cmd = `ssh headnode '$qsub'`
     @info "Submitting array job with name julia-$ID (logdir: $LOGDIR)"
     jobid = capture_jobid(qsub_cmd)
     return jobid
@@ -380,7 +380,7 @@ end
 function selfdestruct()
     pbsid = split(ENV["PBS_JOBID"], ".") |> first
     @info "Nuking job $pbsid"
-    run(`ssh headnode "sh -c /opt/pbs/bin/qdel $pbsid"`)
+    run(`ssh headnode '/opt/pbs/bin/qdel $pbsid'`)
     @info "Nuked job $pbsid." # All going well, this won't run
 end
 end # module

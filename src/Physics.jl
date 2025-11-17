@@ -125,7 +125,7 @@ function Distributed.launch(manager::PBSProManager,
             id = id[1:(end - 2)]
         end
         if isnothing(tryparse(Int, id))
-            error("Job id could not be parse from worker output '$line'. Please make sure tour `.bashrc` file does not print anything to stdout.")
+            error("Job id could not be parse from worker output '$line'. Please make sure your `.bashrc` file does not print anything to stdout.")
         end
 
         println("Job $id in queue.")
@@ -161,10 +161,35 @@ function Distributed.launch(manager::PBSProManager,
             host = host[3]
 
             config = WorkerConfig()
-            config.host = host
-            config.port = port
 
-            config.userdata = Dict{Symbol, Any}(:job => id, :task => i, :iofile => fname)
+            # If not on cluster, connect via SSH through headnode
+            if isdir("/opt/pbs")
+                config.host = host
+                config.port = port
+                config.userdata = Dict{Symbol, Any}(:job => id, :task => i,
+                                                    :iofile => fname)
+            else
+                local_port = rand(10000:60000)  # Random local port
+
+                # SSH tunnel: 127.0.0.1:local_port -> headnode -> worker_host:worker_port
+                # Use -4 to force IPv4, bind to 127.0.0.1 explicitly
+                tunnel_cmd = `ssh -4 -N -L 127.0.0.1:$local_port:$host:$port headnode`
+
+                @info "Setting up SSH tunnel on port $local_port for worker at $host:$port"
+
+                # Start tunnel in background
+                tunnel_proc = run(tunnel_cmd, wait = false)
+                sleep(2)  # Give tunnel time to establish
+
+                # Connect to 127.0.0.1 (IPv4) through the tunnel
+                config.host = "127.0.0.1"  # Use explicit IPv4 address instead of "localhost"
+                config.port = local_port
+                config.userdata = Dict{Symbol, Any}(:job => id,
+                                                    :task => i,
+                                                    :iofile => fname,
+                                                    :tunnel => tunnel_proc)
+            end
+
             push!(instances_arr, config)
             notify(c)
         end

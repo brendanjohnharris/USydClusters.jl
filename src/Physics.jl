@@ -1022,6 +1022,13 @@ function hpc_capacity(host, ncpus, mem_gb, saturation)
                               reserved_gb)
 end
 
+# Shave capacities by `buffer` for fill-everything requests; returns the fill target
+function fill_target(cluster, hpc, buffer)
+    scale(caps) = [k => floor(Int, (1 - buffer) * c) for (k, c) in caps]
+    cluster, hpc = scale(cluster), scale(hpc)
+    return cluster, hpc, sum(last, cluster; init = 0) + sum(last, hpc; init = 0)
+end
+
 # Largest-remainder split of n workers across capacities; assumes n <= total capacity
 function proportional_split(n, caps)
     total = sum(last, caps; init = 0)
@@ -1078,7 +1085,8 @@ core = 1 CPU thread), throttled by `saturation`. If combined capacity falls shor
 launches what fits and warns.
 
 # Arguments
-- `np::Integer`: Total number of workers
+- `np`: Total number of workers; `Inf` fills all available capacity, less `buffer`
+- `buffer::Real=0.1`: With `np = Inf`, fraction of each pool's capacity left free
 - `ncpus::Integer=1`: Cores per worker
 - `mem::Union{Real,String}=4`: Memory per worker (GB or string with units)
 - `walltime::Union{Integer,String}=24`: Walltime for cluster jobs (hours or "HH:MM:SS")
@@ -1093,9 +1101,11 @@ launches what fits and warns.
 ```julia
 procs = distributeprocs(20; ncpus = 2, mem = 8, walltime = 12)
 procs = distributeprocs(10; hpcratio = 0.9)  # mostly onto the HPCs
+procs = distributeprocs(Inf; ncpus = 2)      # fill 90% of everything
 ```
 """
-function distributeprocs(np::Integer;
+function distributeprocs(np::Real;
+                         buffer::Real = 0.1,
                          ncpus::Integer = 1,
                          mem::Union{Real, AbstractString} = 4,
                          walltime::Union{Integer, AbstractString} = 24,
@@ -1105,7 +1115,9 @@ function distributeprocs(np::Integer;
                          hpcs = ["orr", "cartman", "karl"],
                          project = dirname(Base.active_project()),
                          kwargs...)
-    np > 0 || throw(ArgumentError("np must be a positive integer, got $np"))
+    (np > 0 && (isinf(np) || isinteger(np))) ||
+        throw(ArgumentError("np must be a positive integer or Inf, got $np"))
+    0 <= buffer < 1 || throw(ArgumentError("buffer must be in [0, 1), got $buffer"))
     mem_str = parse_memory(mem)
     mem_gb = memory_string_to_gb(mem_str)
 
@@ -1113,6 +1125,12 @@ function distributeprocs(np::Integer;
     cluster_task = @async cluster_capacities(queues, ncpus, mem_gb)
     hpc = asyncmap(h -> h => hpc_capacity(h, ncpus, mem_gb, saturation), hpcs)
     cluster = fetch(cluster_task)
+
+    if isinf(np)
+        cluster, hpc, np = fill_target(cluster, hpc, buffer)
+        np > 0 || (@warn "No capacity available to fill"; return Int[])
+    end
+    np = Int(np)
     calloc, halloc, shortfall = allocate_workers(np, cluster, hpc, hpcratio)
     @info "distributeprocs allocation" cluster=calloc hpc=halloc shortfall
     shortfall > 0 &&

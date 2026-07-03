@@ -160,6 +160,17 @@ end
     @test_throws ArgumentError Physics.allocate_workers(10, cluster, hpc, 1.5)
 end
 
+@testset "fill_target" begin
+    cluster = ["defaultQ" => 48, "taiji" => 32]
+    hpc = ["orr" => 3, "karl" => 20]
+    c, h, np = Physics.fill_target(cluster, hpc, 0.1)
+    @test c == ["defaultQ" => 43, "taiji" => 28] && h == ["orr" => 2, "karl" => 18]
+    @test np == 43 + 28 + 2 + 18
+    # zero buffer takes everything; empty pools give zero target
+    @test Physics.fill_target(cluster, hpc, 0.0)[3] == 103
+    @test Physics.fill_target(Pair{String, Int}[], Pair{String, Int}[], 0.1)[3] == 0
+end
+
 @testset "proportional_split" begin
     @test Physics.proportional_split(0, ["a" => 5]) == ["a" => 0]
     split4 = Physics.proportional_split(4, ["a" => 6, "b" => 2])

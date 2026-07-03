@@ -155,7 +155,7 @@ Generate a cookie for Distributed worker authentication.
 """
 function worker_cookie()
     Distributed.init_multi()
-    Distributed.cluster_cookie()
+    return Distributed.cluster_cookie()
 end
 
 """
@@ -179,6 +179,7 @@ A cluster manager for launching Julia workers on PBS Pro job scheduler.
 # Fields
 - `np::Integer`: Number of parallel workers to launch
 - `ncpus::Integer`: Number of CPUs per worker
+- `ngpus::Integer`: Number of GPUs per worker (default 0)
 - `mem::String`: Memory per worker with units (e.g., "16GB", "2048MB")
 - `walltime::String`: Maximum walltime in HH:MM:SS format
 - `queue::Cmd`: PBS queue name (optional)
@@ -188,6 +189,7 @@ A cluster manager for launching Julia workers on PBS Pro job scheduler.
 struct PBSProManager <: ClusterManager
     np::Integer
     ncpus::Integer
+    ngpus::Integer
     mem::String  # Memory with units
     walltime::String  # HH:MM:SS format
     queue::Cmd
@@ -196,13 +198,14 @@ struct PBSProManager <: ClusterManager
 end
 
 """
-    PBSProManager(np=1; ncpus=8, mem=16, walltime=24, queue=``, project=``, qsubflags=``)
+    PBSProManager(np=1; ncpus=8, ngpus=0, mem=16, walltime=24, queue=``, project=``, qsubflags=``)
 
 Create a PBS Pro cluster manager.
 
 # Arguments
 - `np::Integer=1`: Number of parallel workers to launch
 - `ncpus::Integer=8`: Number of CPUs per worker
+- `ngpus::Integer=0`: Number of GPUs per worker
 - `mem::Union{Real,String}=16`: Memory per worker (number as GB or string with units)
 - `walltime::Union{Integer,String}=24`: Maximum walltime (hours or "HH:MM:SS")
 - `queue::Cmd=```: PBS queue name
@@ -214,22 +217,27 @@ Create a PBS Pro cluster manager.
 PBSProManager(4; mem=32, walltime=24)         # 32GB, 24 hours
 PBSProManager(4; mem="2048MB", walltime="12:30:00")
 PBSProManager(4; mem=0.5, walltime=2)         # 512MB, 2 hours
+PBSProManager(4; ngpus=1, mem=32)             # 1 GPU per worker
 ```
 """
-function PBSProManager(np::Integer = 1;
-                       ncpus::Integer = 8,
-                       mem::Union{Real, AbstractString} = 16,
-                       walltime::Union{Integer, AbstractString} = 24,
-                       queue::Cmd = ``,
-                       project::Cmd = ``,
-                       qsubflags::Cmd = ``)
+function PBSProManager(
+        np::Integer = 1;
+        ncpus::Integer = 8,
+        ngpus::Integer = 0,
+        mem::Union{Real, AbstractString} = 16,
+        walltime::Union{Integer, AbstractString} = 24,
+        queue::Cmd = ``,
+        project::Cmd = ``,
+        qsubflags::Cmd = ``
+    )
     mem_str = parse_memory(mem)
     walltime_str = parse_walltime(walltime)
 
     np > 0 || throw(ArgumentError("np must be a positive integer, got $np"))
     ncpus > 0 || throw(ArgumentError("ncpus must be a positive integer, got $ncpus"))
+    ngpus >= 0 || throw(ArgumentError("ngpus must be a non-negative integer, got $ngpus"))
 
-    return PBSProManager(np, ncpus, mem_str, walltime_str, queue, project, qsubflags)
+    return PBSProManager(np, ncpus, ngpus, mem_str, walltime_str, queue, project, qsubflags)
 end
 
 """
@@ -237,8 +245,10 @@ end
 
 Manage worker lifecycle operations. Currently a no-op for PBS Pro.
 """
-function Distributed.manage(manager::PBSProManager,
-                            id::Int64, config::WorkerConfig, op::Symbol)
+function Distributed.manage(
+        manager::PBSProManager,
+        id::Int64, config::WorkerConfig, op::Symbol
+    )
     # No-op for PBS
 end
 
@@ -256,8 +266,10 @@ Launch PBS jobs for distributed workers.
 # Returns
 - Job ID string on success, `false` on failure
 """
-function Distributed.launch(manager::PBSProManager,
-                            params::Dict, instances_arr::Array, c::Condition)
+function Distributed.launch(
+        manager::PBSProManager,
+        params::Dict, instances_arr::Array, c::Condition
+    )
     try
         dir = params[:dir]
         exename = params[:exename]
@@ -265,6 +277,7 @@ function Distributed.launch(manager::PBSProManager,
 
         np = manager.np
         ncpus = manager.ncpus
+        ngpus = manager.ngpus
         mem = manager.mem  # Now a string with units
         walltime = manager.walltime  # Now in HH:MM:SS format
 
@@ -306,6 +319,7 @@ function Distributed.launch(manager::PBSProManager,
 
         # Create PBS script - format_pbs_resources now receives strings directly
         ID = Base.shell_escape("$(ID)")
+        gpu_resource = ngpus > 0 ? ",ngpus=$(ngpus)" : ""
         cmd = """#!/bin/bash
         #PBS -N julia-$ID
         #PBS -V
@@ -313,7 +327,7 @@ function Distributed.launch(manager::PBSProManager,
         #PBS -m n
         #PBS -o $(LOGDIR)/$ID.final.log
         $(Jcmd)
-        #PBS -l ncpus=$(ncpus),mem=$(lowercase(mem)),walltime=$(walltime)
+        #PBS -l ncpus=$(ncpus),mem=$(lowercase(mem)),walltime=$(walltime)$(gpu_resource)
         cd $dir
         source $(ENV["HOME"])/.bashrc
         MAIN_JOBID=\${PBS_JOBID%\\[*}
@@ -416,7 +430,7 @@ function Distributed.launch(manager::PBSProManager,
 
                         # Check if we got valid data
                         if !isempty(host_info) && occursin('#', host_info) &&
-                           occursin(':', host_info)
+                                occursin(':', host_info)
                             break
                         end
                     catch e
@@ -454,8 +468,10 @@ function Distributed.launch(manager::PBSProManager,
                     # Direct connection from cluster node
                     config.host = host
                     config.port = port
-                    config.userdata = Dict{Symbol, Any}(:job => id, :task => i,
-                                                        :iofile => fname)
+                    config.userdata = Dict{Symbol, Any}(
+                        :job => id, :task => i,
+                        :iofile => fname
+                    )
                 else
                     # Setup SSH tunnel with retry logic for port conflicts
                     tunnel_established = false
@@ -465,8 +481,10 @@ function Distributed.launch(manager::PBSProManager,
                     for attempt in 1:max_port_attempts
                         local_port = rand(10000:60000)
 
-                        # Add timeout and better error handling to SSH command
-                        tunnel_cmd = `ssh -4 -N -L 127.0.0.1:$local_port:$host:$port -o ConnectTimeout=30 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 headnode`
+                        # ControlPath=none/ControlMaster=no: never multiplex. These are many
+                        # concurrent, forward-only sessions; sharing a user ControlMaster master
+                        # (e.g. `Host headnode` with ControlPersist) makes the slaves race and die.
+                        tunnel_cmd = `ssh -4 -N -L 127.0.0.1:$local_port:$host:$port -o ControlPath=none -o ControlMaster=no -o ConnectTimeout=30 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 headnode`
 
                         @info "Worker $i: Setting up SSH tunnel (attempt $attempt/$max_port_attempts) on port $local_port for worker at $host:$port"
 
@@ -483,10 +501,12 @@ function Distributed.launch(manager::PBSProManager,
                                 tunnel_established = true
                                 config.host = "127.0.0.1"
                                 config.port = local_port
-                                config.userdata = Dict{Symbol, Any}(:job => id,
-                                                                    :task => i,
-                                                                    :iofile => fname,
-                                                                    :tunnel => tunnel_proc)
+                                config.userdata = Dict{Symbol, Any}(
+                                    :job => id,
+                                    :task => i,
+                                    :iofile => fname,
+                                    :tunnel => tunnel_proc
+                                )
                                 @info "Success"
                                 break
                             else
@@ -530,7 +550,7 @@ function Distributed.launch(manager::PBSProManager,
 
     catch e
         println("Error launching workers: $e")
-        @error "Full error details" exception=(e, catch_backtrace())
+        @error "Full error details" exception = (e, catch_backtrace())
 
         # Clean up temp file if it exists
         @isdefined(f) && isfile(f) && rm(f, force = true)
@@ -587,7 +607,7 @@ function Distributed.kill(manager::PBSProManager, id::Int64, config::WorkerConfi
     end
 
     # If we have the PBS job ID, we could also qdel it
-    if haskey(config.userdata, :job)
+    return if haskey(config.userdata, :job)
         job_id = config.userdata[:job]
         task = get(config.userdata, :task, 1)
         @debug "PBS job $job_id (task $task) cleanup completed"
@@ -602,6 +622,7 @@ Add distributed workers using PBS Pro.
 # Arguments
 - `np::Integer`: Number of workers to add
 - `ncpus::Integer=8`: CPUs per worker
+- `ngpus::Integer=0`: GPUs per worker
 - `mem::Union{Real,String}=16`: Memory per worker (GB as number or string with units)
 - `walltime::Union{Integer,String}=24`: Maximum runtime (hours or "HH:MM:SS")
 - `queue::Cmd=```: PBS queue name
@@ -620,19 +641,30 @@ addprocs(4; mem="16GB", walltime="24:00:00")
 # Add 2 workers with specific resources
 addprocs(2; ncpus=16, mem=0.5, walltime=2)  # 512MB, 2 hours
 addprocs(2; ncpus=16, mem="32GB", walltime="02:30:00")
+
+# Add 4 workers with 1 GPU each
+addprocs(4; ngpus=1, mem=32)
 ```
 """
-function addprocs(np::Integer;
-                  ncpus::Integer = 8,
-                  mem::Union{Real, AbstractString} = 16,
-                  walltime::Union{Integer, AbstractString} = 24,
-                  queue::Cmd = ``,
-                  project::Cmd = ``,
-                  qsubflags::Cmd = ``,
-                  kwargs...)
-    Distributed.addprocs(PBSProManager(np; ncpus, mem, walltime, queue, project, qsubflags);
-                         enable_threaded_blas = true,
-                         kwargs...)
+function addprocs(
+        np::Integer;
+        ncpus::Integer = 8,
+        ngpus::Integer = 0,
+        mem::Union{Real, AbstractString} = 16,
+        walltime::Union{Integer, AbstractString} = 24,
+        queue::Cmd = ``,
+        project::Cmd = ``,
+        qsubflags::Cmd = ``,
+        kwargs...
+    )
+    return Distributed.addprocs(
+        PBSProManager(
+            np; ncpus, ngpus, mem, walltime, queue, project,
+            qsubflags
+        );
+        enable_threaded_blas = true,
+        kwargs...
+    )
 end
 
 # ===========================
@@ -654,6 +686,18 @@ function capture_jobid(cmd::Cmd)
     output = read(cmd, String)
     jobid, hostname = split(output, '.')
     return jobid
+end
+
+function next_runscripts_id(dir = LOGDIR)
+    dir = expanduser(dir)
+    isdir(dir) || return 1
+    re = r"^runscripts_(\d+)\.script$"
+    ids = Int[]
+    for entry in readdir(dir)
+        m = match(re, entry)
+        m === nothing || push!(ids, parse(Int, m.captures[1]))
+    end
+    return isempty(ids) ? 1 : maximum(ids) + 1
 end
 
 """
@@ -680,15 +724,17 @@ jobid, logfile = runscript("myscript.jl"; mem=64, walltime=12)
 jobid, logfile = runscript("myscript.jl"; mem="64GB", walltime="12:00:00")
 ```
 """
-function runscript(script::String;
-                   ncpus::Integer = 10,
-                   mem::Union{Real, AbstractString} = 31,
-                   walltime::Union{Integer, AbstractString} = 48,
-                   qsubflags::Cmd = ``,
-                   project::Cmd = ``,
-                   exeflags::Cmd = ``,
-                   queue::Cmd = ``,
-                   kwargs...)
+function runscript(
+        script::String;
+        ncpus::Integer = 10,
+        mem::Union{Real, AbstractString} = 31,
+        walltime::Union{Integer, AbstractString} = 48,
+        qsubflags::Cmd = ``,
+        project::Cmd = ``,
+        exeflags::Cmd = ``,
+        queue::Cmd = ``,
+        kwargs...
+    )
     mem_str = parse_memory(mem)
     walltime_str = parse_walltime(walltime)
 
@@ -742,9 +788,12 @@ Submit a Julia expression as a PBS job.
 function runscript(expr::Expr; kwargs...)
     file = first(mktemp(LOGDIR; cleanup = false))
     open(file, "w") do f
-        write(f, string(expr))
+        stmts = expr.head === :block ? Base.remove_linenums!(expr).args : [expr]
+        for stmt in stmts
+            println(f, stmt)
+        end
     end
-    runscript(file; kwargs...)
+    return runscript(file; kwargs...)
 end
 
 """
@@ -760,21 +809,26 @@ Submit multiple Julia expressions as a PBS array job.
 - Job ID string
 """
 function runscripts(exprs::Vector; kwargs...)
-    ID = rand(UInt16) |> Int
-    ID = "runscripts_$(ID)"
+    if length(exprs) == 1
+        runscript(exprs[1]; kwargs...)
+    else
+        ID = "runscripts_$(next_runscripts_id())"
 
-    scriptdir = "$(LOGDIR)/$(ID).script"
-    mkpath(expanduser(scriptdir))
+        scriptdir = "$(LOGDIR)/$(ID).script"
+        mkpath(expanduser(scriptdir))
 
-    scriptfiles = map(enumerate(exprs)) do (i, ex)
-        file = expanduser("$(scriptdir)/$i.jl")
-        open(file, "w") do f
-            write(f, string(ex))
+        scriptfiles = map(enumerate(exprs)) do (i, ex)
+            file = expanduser("$(scriptdir)/$i.jl")
+            open(file, "w") do f
+                for stmt in Base.remove_linenums!(ex).args
+                    println(f, stmt)
+                end
+            end
+            return file
         end
-        return file
-    end
 
-    runscripts(scriptdir; ID, kwargs...)
+        return runscripts(scriptdir; ID, kwargs...)
+    end
 end
 
 """
@@ -803,16 +857,18 @@ jobid = runscripts("/path/to/scripts"; mem=32, walltime=6)
 jobid = runscripts("/path/to/scripts"; mem="32GB", walltime="06:00:00")
 ```
 """
-function runscripts(scriptdir::String;
-                    ncpus::Integer = 10,
-                    mem::Union{Real, AbstractString} = 31,
-                    walltime::Union{Integer, AbstractString} = 48,
-                    qsubflags::Cmd = ``,
-                    project::Cmd = ``,
-                    exeflags::Cmd = ``,
-                    queue::Cmd = ``,
-                    ID = rand(UInt16) |> Int,
-                    kwargs...)
+function runscripts(
+        scriptdir::String;
+        ncpus::Integer = 10,
+        mem::Union{Real, AbstractString} = 31,
+        walltime::Union{Integer, AbstractString} = 48,
+        qsubflags::Cmd = ``,
+        project::Cmd = ``,
+        exeflags::Cmd = ``,
+        queue::Cmd = ``,
+        ID = "runscripts_$(next_runscripts_id())",
+        kwargs...
+    )
     mem_str = parse_memory(mem)
     walltime_str = parse_walltime(walltime)
 
@@ -878,7 +934,7 @@ function selfdestruct()
     pbsid = split(ENV["PBS_JOBID"], ".") |> first
     @info "Nuking job $pbsid"
     run(`ssh headnode "/opt/pbs/bin/qdel $pbsid"`)
-    @info "Nuked job $pbsid."  # This likely won't run if successful
+    return @info "Nuked job $pbsid."  # This likely won't run if successful
 end
 
 end # module Physics

@@ -66,6 +66,12 @@ Job ID          Username Queue    Jobname    SessID NDS TSK Memory Time  S Time
 
 const PROBE = PBSNODES * "===Q===\n" * QSTATQ * "===U===\n" * QSTATU
 
+@testset "string mem round-trip" begin
+    # parse_memory returns a SubString; downstream conversion must accept it
+    @test Physics.memory_string_to_gb(Physics.parse_memory("16GB")) == 16.0
+    @test Physics.memory_string_to_gb(Physics.parse_memory(" 2048MB ")) == 2.0
+end
+
 @testset "pbs_size_gb" begin
     @test Physics.pbs_size_gb("0b") == 0.0
     @test Physics.pbs_size_gb("1024mb") == 1.0

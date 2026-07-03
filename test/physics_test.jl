@@ -22,6 +22,7 @@ ENV["JULIA_DEBUG"] = "USydClusters"
         if isfile(tempfile) && isfile(logfile)
             break
         end
+        sleep(0.5)
     end
     if !isfile(tempfile)
         error("Output file $tempfile not found after $timeout seconds")
@@ -54,6 +55,7 @@ ENV["JULIA_DEBUG"] = "USydClusters"
         if isfile(tempfile) && isfile(logfile)
             break
         end
+        sleep(0.5)
     end
     if !isfile(tempfile)
         error("Output file $tempfile not found after $timeout seconds")
@@ -91,6 +93,7 @@ end
             if isfile(tempfile)
                 break
             end
+            sleep(0.5)
         end
         if !isfile(tempfile)
             error("Output file $tempfile not found after $timeout seconds")

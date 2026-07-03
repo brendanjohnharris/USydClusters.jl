@@ -1,6 +1,6 @@
 module Physics
 using Distributed
-import USydClusters: build_julia_command, format_pbs_resources, LOGDIR, to_string
+import USydClusters: build_julia_command, LOGDIR, to_string
 
 """
     parse_memory(mem::Union{Real, AbstractString}) -> String
@@ -16,7 +16,7 @@ Parse memory specification and return optimal unit representation.
 # Examples
 ```julia
 parse_memory(1)         # "1GB"
-parse_memory(0.5)       # "500MB"
+parse_memory(0.5)       # "512MB"
 parse_memory(16)        # "16GB"
 parse_memory(1.5)       # "1536MB"
 parse_memory("123KB")   # "123KB"
@@ -25,37 +25,19 @@ parse_memory("16GB")    # "16GB"
 """
 function parse_memory(mem::Real)
     mem > 0 || throw(ArgumentError("Memory must be positive, got $mem GB"))
-
-    # Convert GB input to optimal unit
     if mem >= 1 && isinteger(mem)
-        # For whole GB values, keep as GB
         return "$(Int(mem))GB"
-    elseif mem < 1
-        # For values less than 1GB, convert to MB
-        mb = mem * 1024
-        if isinteger(mb)
-            return "$(Int(mb))MB"
-        else
-            return "$(Int(round(mb)))MB"
-        end
     else
-        # For fractional GB values > 1, convert to MB for precision
-        mb = mem * 1024
-        return "$(Int(round(mb)))MB"
+        return "$(Int(round(mem * 1024)))MB" # fractional GB expressed in MB
     end
 end
 
 function parse_memory(mem::AbstractString)
-    # For strings, validate and return as-is
     mem = strip(mem)
-
-    # Validate format
-    if !occursin(r"^\d+(?:\.\d+)?\s*[KMGT]B$"i, mem)
+    if !occursin(r"^\d+(?:\.\d+)?[KMGT]B$"i, mem) # no internal whitespace: string is embedded raw in `#PBS -l`
         throw(ArgumentError("Invalid memory format: '$mem'. Use format like '16GB', '2048MB', '512KB', or '2TB'"))
     end
-
-    # Return the string as provided (preserving user's choice of units)
-    return mem
+    return mem # preserve the user's choice of units
 end
 
 """
@@ -81,37 +63,21 @@ parse_walltime("00:45:30")  # "00:45:30"
 """
 function parse_walltime(walltime::Integer)
     walltime > 0 || throw(ArgumentError("Walltime must be positive, got $walltime hours"))
-
-    # Convert hours to HH:MM:SS format
-    # Note: PBS allows hours > 99, so we don't limit to 2 digits
-    hours_str = lpad(walltime, 2, '0')
-    return "$(hours_str):00:00"
+    return "$(lpad(walltime, 2, '0')):00:00" # PBS allows hours > 99, so no 2-digit cap
 end
 
 function parse_walltime(walltime::AbstractString)
     walltime = strip(walltime)
-
-    # Validate HH:MM:SS format
     if !occursin(r"^\d+:\d{2}:\d{2}$", walltime)
         throw(ArgumentError("Invalid walltime format: '$walltime'. Expected format: HH:MM:SS (e.g., '24:00:00', '168:00:00')"))
     end
 
-    # Parse and validate components
-    parts = split(walltime, ':')
-    hours = parse(Int, parts[1])
-    minutes = parse(Int, parts[2])
-    seconds = parse(Int, parts[3])
-
-    # Validate ranges
-    hours >= 0 || throw(ArgumentError("Hours must be non-negative"))
+    hours, minutes, seconds = parse.(Int, split(walltime, ':'))
     0 <= minutes <= 59 || throw(ArgumentError("Minutes must be between 0 and 59"))
     0 <= seconds <= 59 || throw(ArgumentError("Seconds must be between 0 and 59"))
+    hours * 3600 + minutes * 60 + seconds > 0 ||
+        throw(ArgumentError("Total walltime must be greater than 0"))
 
-    # Total time must be positive
-    total_seconds = hours * 3600 + minutes * 60 + seconds
-    total_seconds > 0 || throw(ArgumentError("Total walltime must be greater than 0"))
-
-    # Return the validated string (maintaining original format)
     return walltime
 end
 
@@ -130,23 +96,13 @@ Extract numeric GB value from memory string for calculations.
 """
 function memory_string_to_gb(mem_str::String)
     m = match(r"^(\d+(?:\.\d+)?)\s*([KMGT]B)$"i, mem_str)
-    isnothing(m) && return 16.0  # Default fallback
-
-    value = parse(Float64, m[1])
-    unit = uppercase(m[2])
-
-    if unit == "KB"
-        return value / (1024 * 1024)
-    elseif unit == "MB"
-        return value / 1024
-    elseif unit == "GB"
-        return value
-    elseif unit == "TB"
-        return value * 1024
-    else
-        return 16.0  # Default fallback
-    end
+    isnothing(m) && return 16.0  # default fallback
+    factor = Dict("KB" => 1 / 1024^2, "MB" => 1 / 1024, "GB" => 1.0, "TB" => 1024.0)
+    return parse(Float64, m[1]) * factor[uppercase(m[2])]
 end
+
+# Workers get a heap-size hint of half their requested memory
+with_heap_hint(exeflags::Cmd, mem_str) = `$exeflags --heap-size-hint=$(ceil(Int, memory_string_to_gb(mem_str) / 2))G`
 
 """
     worker_cookie() -> String
@@ -187,10 +143,10 @@ A cluster manager for launching Julia workers on PBS Pro job scheduler.
 - `qsubflags::Cmd`: Additional qsub flags (optional)
 """
 struct PBSProManager <: ClusterManager
-    np::Integer
-    ncpus::Integer
-    ngpus::Integer
-    mem::String  # Memory with units
+    np::Int
+    ncpus::Int
+    ngpus::Int
+    mem::String  # memory with units
     walltime::String  # HH:MM:SS format
     queue::Cmd
     project::Cmd
@@ -241,15 +197,12 @@ function PBSProManager(
 end
 
 """
-    Distributed.manage(manager::PBSProManager, id::Int64, config::WorkerConfig, op::Symbol)
-
-Manage worker lifecycle operations. Currently a no-op for PBS Pro.
+No-op for PBS Pro.
 """
 function Distributed.manage(
         manager::PBSProManager,
         id::Int64, config::WorkerConfig, op::Symbol
     )
-    # No-op for PBS
 end
 
 """
@@ -278,10 +231,9 @@ function Distributed.launch(
         np = manager.np
         ncpus = manager.ncpus
         ngpus = manager.ngpus
-        mem = manager.mem  # Now a string with units
-        walltime = manager.walltime  # Now in HH:MM:SS format
+        mem = manager.mem
+        walltime = manager.walltime
 
-        # Format queue option
         queue = manager.queue
         if !isempty(queue)
             queue = `-q $(queue)`
@@ -296,28 +248,21 @@ function Distributed.launch(
             project = dirname(Base.active_project())
         end
 
-        # Setup job array and logging
+        # Setup job array and logging; np > 0 guaranteed by the constructor
         if np == 1
             Jcmd = ""
             logdir = `$(LOGDIR)`
             logfile = `$(to_string(logdir))/\$\{MAIN_JOBID\}.$(ID).log`
-        elseif np > 1
+        else
             Jcmd = "#PBS -J 1-$np"
             logdir = `$(LOGDIR)/\$\{MAIN_JOBID\}\[\].$(ID).log`
             logfile = `$(to_string(logdir))/\$\{PBS_ARRAY_INDEX\}.log`
-        else
-            throw(ArgumentError("np must be a positive integer, got $np"))
         end
 
-        # Build Julia command with heap size hint
         script = worker_arg()
-        # Calculate heap size hint from memory string
-        mem_gb = memory_string_to_gb(mem)
-        heap_size_gb = ceil(Int, mem_gb / 2)
-        exeflags = `$exeflags --heap-size-hint=$(heap_size_gb)G`
+        exeflags = with_heap_hint(exeflags, mem)
         julia_cmd = build_julia_command(; exename, exeflags, project, script, logfile)
 
-        # Create PBS script - format_pbs_resources now receives strings directly
         ID = Base.shell_escape("$(ID)")
         gpu_resource = ngpus > 0 ? ",ngpus=$(ngpus)" : ""
         cmd = """#!/bin/bash
@@ -329,25 +274,23 @@ function Distributed.launch(
         $(Jcmd)
         #PBS -l ncpus=$(ncpus),mem=$(lowercase(mem)),walltime=$(walltime)$(gpu_resource)
         cd $dir
-        source $(ENV["HOME"])/.bashrc
+        source $(homedir())/.bashrc
         MAIN_JOBID=\${PBS_JOBID%\\[*}
-        MAIN_JOBID=\${MAIN_JOBID%.*}
+        MAIN_JOBID=\${MAIN_JOBID%%.*}
         mkdir -p "$(to_string(logdir))"
         $(to_string(julia_cmd))
         """
         @debug cmd
 
-        # Write and submit script
         f = tempname(LOGDIR)
         write(f, cmd)
 
         _qsub = `/opt/pbs/bin/qsub $(queue) $(qsubflags)`
-        qsub = "source $(ENV["HOME"])/.bashrc > /dev/null 2>&1 && $(Base.shell_escape(_qsub)) $(Base.shell_escape(f))"
+        qsub = "source $(homedir())/.bashrc > /dev/null 2>&1 && $(Base.shell_escape(_qsub)) $(Base.shell_escape(f))"
         qsub_cmd = pipeline(`ssh headnode "$qsub"`, stderr = devnull)
 
         @debug "Submitting PBS job: $qsub_cmd"
 
-        # Capture both stdout and potential errors
         output = ""
         try
             output = read(qsub_cmd, String)
@@ -355,11 +298,8 @@ function Distributed.launch(
             rm(f, force = true)
             error("Failed to submit PBS job: $e")
         end
-
-        # Clean up submission script
         rm(f, force = true)
 
-        # Parse job ID from output
         output = strip(output)
         if isempty(output)
             error("PBS submission returned empty output. Check queue availability and permissions.")
@@ -397,7 +337,7 @@ function Distributed.launch(
         hosttimeout = something(hosttimeout, 480)
 
         # Track SSH tunnels for cleanup on failure
-        tunnels_to_cleanup = []
+        tunnels_to_cleanup = Base.Process[]
 
         for i in 1:np
             try
@@ -543,7 +483,6 @@ function Distributed.launch(
             end
         end
 
-        rm(f, force = true)
         logloc = np == 1 ? logfile : logdir
         println("Running. See stdout of children at $logloc")
         return id
@@ -672,20 +611,28 @@ end
 # ===========================
 
 """
-    capture_jobid(cmd::Cmd) -> String
+    capture_jobid(cmd::Cmd) -> (String, String)
 
-Capture the job ID from a qsub command output.
-
-# Arguments
-- `cmd`: Command to execute
-
-# Returns
-- Job ID string
+Run a qsub command and parse (jobid, server) from its 'JOBID.server' output.
+Array-job brackets are stripped from the ID, matching `Distributed.launch`.
 """
 function capture_jobid(cmd::Cmd)
-    output = read(cmd, String)
-    jobid, hostname = split(output, '.')
-    return jobid
+    output = strip(read(cmd, String))
+    parts = split(output, '.')
+    length(parts) >= 2 ||
+        error("Unexpected qsub output: '$output'. Expected 'JOBID.server'.")
+    jobid = replace(first(parts), "[]" => "")
+    isnothing(tryparse(Int, jobid)) &&
+        error("Job id could not be parsed from qsub output '$output'. Please check your `.bashrc` file doesn't print to stdout.")
+    return jobid, join(parts[2:end], '.')
+end
+
+# Write an expression to a script file, one top-level statement per line
+function write_exprs(file, ex::Expr)
+    stmts = ex.head === :block ? Base.remove_linenums!(ex).args : [ex]
+    open(file, "w") do f
+        foreach(stmt -> println(f, stmt), stmts)
+    end
 end
 
 function next_runscripts_id(dir = LOGDIR)
@@ -738,13 +685,9 @@ function runscript(
     mem_str = parse_memory(mem)
     walltime_str = parse_walltime(walltime)
 
-    # Calculate heap size hint
-    mem_gb = memory_string_to_gb(mem_str)
-    heap_size_gb = ceil(Int, mem_gb / 2)
-
     ID = script |> Base.splitext |> first |> Base.splitpath |> last |> Base.shell_escape
     logfile = `$(LOGDIR)/\$\{PBS_JOBID\}.$(ID).log`
-    exeflags = `$exeflags --heap-size-hint=$(heap_size_gb)G`
+    exeflags = with_heap_hint(exeflags, mem_str)
 
     julia_cmd = build_julia_command(; exeflags, project, script, logfile, kwargs...)
 
@@ -755,22 +698,20 @@ function runscript(
     #PBS -m n
     #PBS -o $(LOGDIR)/$ID.final.log
     #PBS -l ncpus=$(ncpus),mem=$(lowercase(mem_str)),walltime=$(walltime_str)
-    source $(ENV["HOME"])/.bashrc
-    cd $project
+    source $(homedir())/.bashrc
+    cd $(to_string(project))
     $(to_string(julia_cmd))
     """
 
     qsub_file = first(mktemp(LOGDIR; cleanup = false))
-    open(qsub_file, "w") do f
-        write(f, cmd)
-    end
+    write(qsub_file, cmd)
 
     queue = isempty(queue) ? queue : "-q $(Base.shell_escape(queue))"
-    qsub = "source $(ENV["HOME"])/.bashrc && /opt/pbs/bin/qsub $(to_string(qsubflags)) $queue $(Base.shell_escape(qsub_file))"
+    qsub = "source $(homedir())/.bashrc > /dev/null 2>&1 && /opt/pbs/bin/qsub $(to_string(qsubflags)) $queue $(Base.shell_escape(qsub_file))"
     qsub_cmd = `ssh headnode "$qsub"`
-    jobid = capture_jobid(qsub_cmd)
+    jobid, server = capture_jobid(qsub_cmd)
 
-    return jobid, replace(to_string(logfile), r"\$\{PBS_JOBID\}" => "$jobid.headnode")
+    return jobid, replace(to_string(logfile), r"\$\{PBS_JOBID\}" => "$jobid.$server")
 end
 
 """
@@ -787,12 +728,7 @@ Submit a Julia expression as a PBS job.
 """
 function runscript(expr::Expr; kwargs...)
     file = first(mktemp(LOGDIR; cleanup = false))
-    open(file, "w") do f
-        stmts = expr.head === :block ? Base.remove_linenums!(expr).args : [expr]
-        for stmt in stmts
-            println(f, stmt)
-        end
-    end
+    write_exprs(file, expr)
     return runscript(file; kwargs...)
 end
 
@@ -819,11 +755,7 @@ function runscripts(exprs::Vector; kwargs...)
 
         scriptfiles = map(enumerate(exprs)) do (i, ex)
             file = expanduser("$(scriptdir)/$i.jl")
-            open(file, "w") do f
-                for stmt in Base.remove_linenums!(ex).args
-                    println(f, stmt)
-                end
-            end
+            write_exprs(file, ex)
             return file
         end
 
@@ -872,15 +804,11 @@ function runscripts(
     mem_str = parse_memory(mem)
     walltime_str = parse_walltime(walltime)
 
-    # Calculate heap size hint
-    mem_gb = memory_string_to_gb(mem_str)
-    heap_size_gb = ceil(Int, mem_gb / 2)
-
     script = `$(scriptdir)/\$\{PBS_ARRAY_INDEX\}.jl`
     logdir = `$(LOGDIR)/\$\{MAIN_JOBID\}\[\].$(ID).log`
     logfile = `$(to_string(logdir))/\$\{PBS_ARRAY_INDEX\}.log`
-    exeflags = `$exeflags --heap-size-hint=$(heap_size_gb)G`
-    N = length(readdir(scriptdir))
+    exeflags = with_heap_hint(exeflags, mem_str)
+    N = count(f -> occursin(r"^\d+\.jl$", f), readdir(scriptdir)) # only numbered scripts; ignores stray files
 
     N > 0 || throw(ArgumentError("No scripts found in directory: $scriptdir"))
 
@@ -894,25 +822,23 @@ function runscripts(
     #PBS -o $(LOGDIR)/$ID.final.log
     #PBS -l ncpus=$(ncpus),mem=$(lowercase(mem_str)),walltime=$(walltime_str)
     #PBS -J 1-$N
-    source $(ENV["HOME"])/.bashrc
-    cd $project
+    source $(homedir())/.bashrc
+    cd $(to_string(project))
     MAIN_JOBID=\${PBS_JOBID%\\[*}
-    MAIN_JOBID=\${MAIN_JOBID%.*}
+    MAIN_JOBID=\${MAIN_JOBID%%.*}
     mkdir -p "$(to_string(logdir))"
     $(to_string(julia_cmd))
     """
 
     qsub_file = first(mktemp(scriptdir; cleanup = false))
-    open(qsub_file, "w") do f
-        write(f, cmd)
-    end
+    write(qsub_file, cmd)
 
     queue = isempty(queue) ? queue : "-q $(Base.shell_escape(queue))"
-    qsub = "source $(ENV["HOME"])/.bashrc && /opt/pbs/bin/qsub $(to_string(qsubflags)) $queue $qsub_file"
+    qsub = "source $(homedir())/.bashrc > /dev/null 2>&1 && /opt/pbs/bin/qsub $(to_string(qsubflags)) $queue $(Base.shell_escape(qsub_file))"
     qsub_cmd = `ssh headnode "$qsub"`
 
     @info "Submitting array job with name julia-$ID (logdir: $LOGDIR)"
-    jobid = capture_jobid(qsub_cmd)
+    jobid, _ = capture_jobid(qsub_cmd)
 
     return jobid
 end

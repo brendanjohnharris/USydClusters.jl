@@ -843,6 +843,312 @@ function runscripts(
     return jobid
 end
 
+# ===========================
+# Heterogeneous distribution (PBS queues + shared HPCs)
+# ===========================
+
+export distributeprocs
+
+# PBS reports sizes like "63437mb", "58720256kb", "0b"
+function pbs_size_gb(s::AbstractString)
+    m = match(r"^(\d+(?:\.\d+)?)([kmgt]?)b$"i, strip(s))
+    isnothing(m) && return 0.0
+    factor = Dict("" => 1 / 1024^3, "k" => 1 / 1024^2, "m" => 1 / 1024, "g" => 1.0,
+                  "t" => 1024.0)
+    return parse(Float64, m[1]) * factor[lowercase(m[2])]
+end
+
+# Fields of a `key = value` block, keyed by exact prefix (pbsnodes -av, qstat -Qf)
+function block_field(lines, key)
+    i = findfirst(l -> startswith(strip(l), key * " = "), lines)
+    return isnothing(i) ? nothing : strip(last(split(lines[i], " = ", limit = 2)))
+end
+
+"""
+    parse_pbsnodes(text) -> Vector{NamedTuple}
+
+Parse `pbsnodes -av` output into per-vnode (name, state, qlist, freecpus, freegb).
+Parent hosts report zero resources; capacity lives on child vnodes like `nodegpu02[1]`.
+"""
+function parse_pbsnodes(text::AbstractString)
+    vnodes = map(split(text, r"\n(?=\S)")) do block
+        lines = split(block, '\n')
+        name = strip(first(lines))
+        isempty(name) && return nothing
+        f(key) = block_field(lines, key)
+        avail_cpus = something(tryparse(Int, something(f("resources_available.ncpus"), "")), 0)
+        used_cpus = something(tryparse(Int, something(f("resources_assigned.ncpus"), "")), 0)
+        avail_gb = pbs_size_gb(something(f("resources_available.mem"), ""))
+        used_gb = pbs_size_gb(something(f("resources_assigned.mem"), ""))
+        qlist = lowercase.(split(something(f("resources_available.Qlist"), ""), ',';
+                                 keepempty = false))
+        return (; name, state = something(f("state"), "unknown"), qlist,
+                freecpus = max(0, avail_cpus - used_cpus),
+                freegb = max(0.0, avail_gb - used_gb))
+    end
+    return [v for v in vnodes if !isnothing(v)]
+end
+
+"""
+    parse_queues(text) -> Dict
+
+Parse `qstat -Q -f` output into queue => (type, dest, ncpus_cap), where `ncpus_cap`
+is the generic per-user running-ncpus limit (`max_run_res.ncpus = [u:PBS_GENERIC=N]`).
+"""
+function parse_queues(text::AbstractString)
+    queues = Dict{String, NamedTuple}()
+    for block in split(text, r"\n(?=Queue: )")
+        lines = split(block, '\n')
+        m = match(r"^\s*Queue: (\S+)", first(lines))
+        isnothing(m) && continue
+        cap = block_field(lines, "max_run_res.ncpus")
+        capm = isnothing(cap) ? nothing : match(r"PBS_GENERIC=(\d+)", cap)
+        queues[lowercase(m[1])] = (type = something(block_field(lines, "queue_type"), ""),
+                                   dest = block_field(lines, "route_destinations"),
+                                   ncpus_cap = isnothing(capm) ? nothing :
+                                               parse(Int, capm[1]))
+    end
+    return queues
+end
+
+# Running ncpus per queue from `qstat -u <user>` (TSK column of jobs in state R)
+function parse_user_ncpus(text::AbstractString)
+    usage = Dict{String, Int}()
+    for l in split(text, '\n')
+        startswith(l, r"\d") || continue
+        p = split(l)
+        length(p) >= 10 || continue
+        tsk = tryparse(Int, p[7])
+        (isnothing(tsk) || p[10] != "R") && continue
+        q = lowercase(p[3])
+        usage[q] = get(usage, q, 0) + tsk
+    end
+    return usage
+end
+
+function probe_cluster()
+    remote = "pbsnodes -av; echo ===Q===; qstat -Q -f; echo ===U===; qstat -u $(ENV["USER"])"
+    return try
+        read(pipeline(`ssh -o BatchMode=yes -o ConnectTimeout=10 headnode "$remote"`,
+                      stderr = devnull), String)
+    catch
+        ""
+    end
+end
+
+"""
+    cluster_capacities(text, queues, ncpus, mem_gb) -> Vector{Pair{String, Int}}
+
+Workers of shape `ncpus` cores x `mem_gb` GB that can start immediately on each queue,
+from a combined `pbsnodes -av`/`qstat -Q -f`/`qstat -u` probe. Routing queues (e.g.
+defaultQ) are followed one hop to their execution queue for node matching and per-user
+ncpus limits.
+"""
+function cluster_capacities(text::AbstractString, queues, ncpus, mem_gb)
+    parts = split(text, r"===[QU]===")
+    length(parts) == 3 || return [q => 0 for q in queues]
+    vnodes = parse_pbsnodes(parts[1])
+    qinfo = parse_queues(parts[2])
+    usage = parse_user_ncpus(parts[3])
+    return map(queues) do q
+        info = get(qinfo, lowercase(q), nothing)
+        eff = if !isnothing(info) && info.type == "Route" && !isnothing(info.dest)
+            lowercase(first(split(info.dest, ',')))
+        else
+            lowercase(q)
+        end
+        fit = sum(vnodes; init = 0) do v
+            v.state in ("free", "job-busy") && eff in v.qlist || return 0
+            return min(v.freecpus ÷ ncpus, floor(Int, v.freegb / mem_gb))
+        end
+        einfo = get(qinfo, eff, nothing)
+        if !isnothing(einfo) && !isnothing(einfo.ncpus_cap)
+            remaining = max(0, einfo.ncpus_cap - get(usage, eff, 0))
+            fit = min(fit, remaining ÷ ncpus)
+        end
+        return q => max(fit, 0)
+    end
+end
+function cluster_capacities(queues, ncpus, mem_gb)
+    cluster_capacities(probe_cluster(), queues, ncpus, mem_gb)
+end
+
+# Our live HPC workers per host: loadavg lags freshly spawned (still-idle) workers, so
+# repeated distributeprocs calls would double-book without explicit accounting
+const HPC_WORKERS = Dict{String, Vector{@NamedTuple{pid::Int, cpus::Int, gb::Float64}}}()
+
+# Prune dead pids and return (reserved cores, reserved GB) we already occupy on host
+function reserved_on(host)
+    ours = get(HPC_WORKERS, host, nothing)
+    isnothing(ours) && return 0, 0.0
+    filter!(w -> w.pid in Distributed.procs(), ours)
+    return sum(w -> w.cpus, ours; init = 0), sum(w -> w.gb, ours; init = 0.0)
+end
+
+"""
+    parse_hpc_capacity(text, ncpus, mem_gb, saturation; reserved_cores = 0, reserved_gb = 0) -> Int
+
+Workers of shape `ncpus` x `mem_gb` that fit politely on a shared machine, from probe
+output `nproc; cat /proc/loadavg; free -g` (available-memory column). `saturation`
+caps the fraction of total cores and available memory we are willing to occupy;
+`reserved_*` subtract resources our existing workers already claim (conservative: a
+busy worker is also partly counted in loadavg).
+"""
+function parse_hpc_capacity(text::AbstractString, ncpus, mem_gb, saturation;
+                            reserved_cores = 0, reserved_gb = 0.0)
+    lines = split(strip(text), '\n')
+    length(lines) >= 3 || return 0
+    cores = tryparse(Int, strip(lines[1]))
+    load = tryparse(Float64, first(split(lines[2])))
+    memparts = split(lines[3])
+    avail_gb = length(memparts) >= 7 ? tryparse(Float64, memparts[7]) : nothing
+    any(isnothing, (cores, load, avail_gb)) && return 0
+    return floor(Int,
+                 max(0.0,
+                     min((cores * saturation - load - reserved_cores) / ncpus,
+                         (avail_gb * saturation - reserved_gb) / mem_gb)))
+end
+
+function hpc_capacity(host, ncpus, mem_gb, saturation)
+    text = try
+        read(pipeline(`ssh -o BatchMode=yes -o ConnectTimeout=10 $host "nproc; cat /proc/loadavg; free -g | sed -n 2p"`,
+                      stderr = devnull), String)
+    catch
+        ""
+    end
+    isempty(text) && @warn "HPC $host unreachable; assigning zero capacity"
+    reserved_cores, reserved_gb = reserved_on(host)
+    return parse_hpc_capacity(text, ncpus, mem_gb, saturation; reserved_cores,
+                              reserved_gb)
+end
+
+# Largest-remainder split of n workers across capacities; assumes n <= total capacity
+function proportional_split(n, caps)
+    total = sum(last, caps; init = 0)
+    (n <= 0 || total == 0) && return [first(c) => 0 for c in caps]
+    quotas = [n * last(c) / total for c in caps]
+    alloc = [min(floor(Int, q), last(c)) for (q, c) in zip(quotas, caps)]
+    while sum(alloc) < n
+        headroom = [alloc[j] < last(caps[j]) ? quotas[j] - alloc[j] : -Inf
+                    for j in eachindex(caps)]
+        i = argmax(headroom)
+        headroom[i] == -Inf && break
+        alloc[i] += 1
+    end
+    return [first(c) => a for (c, a) in zip(caps, alloc)]
+end
+
+"""
+    allocate_workers(np, cluster, hpc, hpcratio) -> (cluster_alloc, hpc_alloc, shortfall)
+
+Split `np` workers between cluster queues and HPCs, each a Vector{Pair{String, Int}} of
+capacities. Pools are weighted by capacity x ratio: `hpcratio = 0` uses only the
+cluster, `1` only the HPCs, `0.5` follows free capacity; intermediate values bias the
+split, with overflow spilling to the other pool.
+"""
+function allocate_workers(np, cluster, hpc, hpcratio)
+    0 <= hpcratio <= 1 ||
+        throw(ArgumentError("hpcratio must be in [0, 1], got $hpcratio"))
+    C = sum(last, cluster; init = 0)
+    H = sum(last, hpc; init = 0)
+    wc = C * (1 - hpcratio)
+    wh = H * hpcratio
+    n_h = if hpcratio == 1
+        min(np, H)
+    elseif hpcratio == 0 || wc + wh == 0
+        0
+    else
+        min(round(Int, np * wh / (wc + wh)), H)
+    end
+    n_c = hpcratio == 1 ? 0 : min(np - n_h, C)
+    if 0 < hpcratio < 1
+        n_h = min(np - n_c, H) # spill what the cluster couldn't take
+    end
+    return proportional_split(n_c, cluster), proportional_split(n_h, hpc),
+           np - n_c - n_h
+end
+
+"""
+    distributeprocs(np; kwargs...) -> Vector{Int}
+
+Launch `np` workers across the PBS queues and shared HPCs, split according to live
+free capacity. Cluster workers are submitted with enforced `ncpus`/`mem`/`walltime`;
+HPC workers run over ssh with `-t ncpus` threads and a heap-size hint (1 requested
+core = 1 CPU thread), throttled by `saturation`. If combined capacity falls short,
+launches what fits and warns.
+
+# Arguments
+- `np::Integer`: Total number of workers
+- `ncpus::Integer=1`: Cores per worker
+- `mem::Union{Real,String}=4`: Memory per worker (GB or string with units)
+- `walltime::Union{Integer,String}=24`: Walltime for cluster jobs (hours or "HH:MM:SS")
+- `hpcratio::Real=0.5`: Bias toward HPCs; 0 = all cluster, 1 = all HPC, 0.5 = follow capacity
+- `saturation::Real=0.75`: Max fraction of an HPC's cores/available memory to occupy
+- `queues=["defaultQ", "taiji"]`: PBS queues to draw on
+- `hpcs=["orr", "cartman", "karl"]`: ssh-reachable shared machines
+- `project=dirname(Base.active_project())`: Project directory for all workers
+- `kwargs...`: Forwarded to `Distributed.addprocs`
+
+# Examples
+```julia
+procs = distributeprocs(20; ncpus = 2, mem = 8, walltime = 12)
+procs = distributeprocs(10; hpcratio = 0.9)  # mostly onto the HPCs
+```
+"""
+function distributeprocs(np::Integer;
+                         ncpus::Integer = 1,
+                         mem::Union{Real, AbstractString} = 4,
+                         walltime::Union{Integer, AbstractString} = 24,
+                         hpcratio::Real = 0.5,
+                         saturation::Real = 0.75,
+                         queues = ["defaultQ", "taiji"],
+                         hpcs = ["orr", "cartman", "karl"],
+                         project = dirname(Base.active_project()),
+                         kwargs...)
+    np > 0 || throw(ArgumentError("np must be a positive integer, got $np"))
+    mem_str = parse_memory(mem)
+    mem_gb = memory_string_to_gb(mem_str)
+
+    # Probe concurrently; each probe is one blocking ssh round-trip
+    cluster_task = @async cluster_capacities(queues, ncpus, mem_gb)
+    hpc = asyncmap(h -> h => hpc_capacity(h, ncpus, mem_gb, saturation), hpcs)
+    cluster = fetch(cluster_task)
+    calloc, halloc, shortfall = allocate_workers(np, cluster, hpc, hpcratio)
+    @info "distributeprocs allocation" cluster=calloc hpc=halloc shortfall
+    shortfall > 0 &&
+        @warn "Capacity for only $(np - shortfall) of $np workers; launching those"
+
+    procs = Int[]
+    for (q, n) in calloc
+        n > 0 || continue
+        try
+            append!(procs,
+                    addprocs(n; ncpus, mem, walltime, queue = Cmd([String(q)]),
+                             project = Cmd([String(project)]), kwargs...))
+        catch e
+            @warn "Failed to launch $n workers on queue $q" exception = e
+        end
+    end
+
+    exename = joinpath(Sys.BINDIR, "julia") # shared filesystem: same binary everywhere
+    exeflags = with_heap_hint(`--project=$(project) -t $(ncpus)`, mem_str)
+    for (h, n) in halloc
+        n > 0 || continue
+        try
+            new = Distributed.addprocs([(h, n)]; tunnel = true, exename, exeflags,
+                                       dir = pwd(), enable_threaded_blas = true,
+                                       kwargs...)
+            append!(procs, new)
+            ours = get!(Vector{@NamedTuple{pid::Int, cpus::Int, gb::Float64}},
+                        HPC_WORKERS, h)
+            append!(ours, [(pid = p, cpus = Int(ncpus), gb = mem_gb) for p in new])
+        catch e
+            @warn "Failed to launch $n workers on $h" exception = e
+        end
+    end
+    return procs
+end
+
 """
     selfdestruct()
 

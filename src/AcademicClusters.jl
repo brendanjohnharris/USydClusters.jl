@@ -18,7 +18,9 @@ function pref_or_env(key, default = nothing)
 end
 
 begin # * Preferences
-    const LOGDIR = rstrip(pref_or_env("logdir", "/tmp/jobs/"), '/')
+    # Default must be shared storage: qsub runs on the headnode and array tasks on
+    # compute nodes, none of which see the submit host's node-local /tmp.
+    const LOGDIR = rstrip(pref_or_env("logdir", joinpath(homedir(), ".jobs")), '/')
 end
 
 function build_julia_command(;

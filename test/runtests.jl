@@ -1,12 +1,10 @@
 using AcademicClusters
 using Test
 
-@testset "distributeprocs" begin
-    include("distributeprocs_test.jl")
-end
 
 @testset "USydPhysics" begin
-    if haskey(ENV, "JULIA_DISTRIBUTED") && ENV["JULIA_DISTRIBUTED"] == "true"
-        include("physics_test.jl")
+    if contains(hostname(), "physics.usyd.edu.au")
+        include("USydPhysics/distributeprocs_test.jl")
+        include("USydPhysics/physics_test.jl")
     end
 end

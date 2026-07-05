@@ -5,7 +5,7 @@ using Test
     include("distributeprocs_test.jl")
 end
 
-@testset "Physics" begin
+@testset "USydPhysics" begin
     if haskey(ENV, "JULIA_DISTRIBUTED") && ENV["JULIA_DISTRIBUTED"] == "true"
         include("physics_test.jl")
     end

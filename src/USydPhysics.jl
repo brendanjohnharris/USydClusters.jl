@@ -1,4 +1,4 @@
-module Physics
+module USydPhysics
 using Distributed
 import USydClusters: build_julia_command, LOGDIR, to_string
 
@@ -1227,4 +1227,4 @@ function selfdestruct()
     return @info "Nuked job $pbsid."  # This likely won't run if successful
 end
 
-end # module Physics
+end # module USydPhysics

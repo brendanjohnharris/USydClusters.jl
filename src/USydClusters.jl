@@ -32,5 +32,5 @@ function build_julia_command(; exename = `julia`, exeflags = ``,
 end
 to_string(cmd::Cmd) = join(cmd.exec, " ")
 
-include("Physics.jl")
+include("USydPhysics.jl")
 end

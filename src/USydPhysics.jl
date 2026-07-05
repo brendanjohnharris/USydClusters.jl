@@ -1,6 +1,6 @@
 module USydPhysics
 using Distributed
-import USydClusters: build_julia_command, LOGDIR, to_string
+import AcademicClusters: build_julia_command, LOGDIR, to_string
 
 """
     parse_memory(mem::Union{Real, AbstractString}) -> String

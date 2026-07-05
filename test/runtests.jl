@@ -1,4 +1,4 @@
-using USydClusters
+using AcademicClusters
 using Test
 
 @testset "distributeprocs" begin

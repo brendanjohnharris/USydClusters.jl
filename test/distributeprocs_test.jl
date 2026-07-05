@@ -1,4 +1,4 @@
-import USydClusters: USydPhysics
+import AcademicClusters: USydPhysics
 using Test
 
 # Fixtures modeled on real headnode output
@@ -87,7 +87,7 @@ end
     v = only(filter(v -> v.name == "nodegpu02[0]", vnodes))
     @test v.freecpus == 6
     @test v.qlist == ["physics", "l40s"]
-    @test isapprox(v.freegb, 62422 / 1024 - 42896384 / 1024^2; atol = 1e-6)
+    @test isapprox(v.freegb, 62422 / 1024 - 42896384 / 1024^2; atol = 1.0e-6)
     @test only(filter(v -> v.name == "nodegpu02[3]", vnodes)).state == "offline"
 end
 
@@ -118,8 +118,10 @@ end
     @test USydPhysics.parse_hpc_capacity(out, 1, 4.0, 0.75) == 8
     @test USydPhysics.parse_hpc_capacity(out, 4, 4.0, 0.75) == 2
     @test USydPhysics.parse_hpc_capacity("", 1, 4.0, 0.75) == 0
-    @test USydPhysics.parse_hpc_capacity("8\n20.0 19.0 18.0 1/1 1\nMem: 62 42 0 0 19 19\n",
-                                     1, 4.0, 0.75) == 0 # overloaded machine
+    @test USydPhysics.parse_hpc_capacity(
+        "8\n20.0 19.0 18.0 1/1 1\nMem: 62 42 0 0 19 19\n",
+        1, 4.0, 0.75
+    ) == 0 # overloaded machine
     # existing workers reduce capacity: 4 reserved cores -> 8.9 - 4 = 4.9 workers
     @test USydPhysics.parse_hpc_capacity(out, 1, 4.0, 0.75; reserved_cores = 4) == 4
     # reserved memory binds: 85*0.75 - 48 = 15.75 -> 3 workers of 4GB

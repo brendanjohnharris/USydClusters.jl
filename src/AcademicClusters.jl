@@ -1,14 +1,14 @@
-module USydClusters
+module AcademicClusters
 using Preferences
 
 """
 Load a preference or environment variable with priority preference -> env -> default
 """
 function pref_or_env(key, default = nothing)
-    env = "USYDCLUSTERS_$(uppercase(key))"
+    env = "AcademicClusters_$(uppercase(key))"
     pref = lowercase(key)
 
-    if @has_preference(pref)
+    return if @has_preference(pref)
         @load_preference(pref)
     elseif haskey(ENV, env)
         ENV[env]
@@ -21,14 +21,16 @@ begin # * Preferences
     const LOGDIR = rstrip(pref_or_env("logdir", "/tmp/jobs/"), '/')
 end
 
-function build_julia_command(; exename = `julia`, exeflags = ``,
-                             project = ``, args = ``,
-                             script, logfile)
+function build_julia_command(;
+        exename = `julia`, exeflags = ``,
+        project = ``, args = ``,
+        script, logfile
+    )
     mkpath(LOGDIR)
     if !(args isa String)
         args = join(args, " ")
     end
-    `$exename $exeflags -t auto --project=$project $script $args 2\>\&1 \| tee "$logfile"`
+    return `$exename $exeflags -t auto --project=$project $script $args 2\>\&1 \| tee "$logfile"`
 end
 to_string(cmd::Cmd) = join(cmd.exec, " ")
 

@@ -1,10 +1,10 @@
-using USydClusters
-import USydClusters: USydPhysics
+using AcademicClusters
+import AcademicClusters: USydPhysics
 using Test
 using Distributed
 using UUIDs
 
-ENV["JULIA_DEBUG"] = "USydClusters"
+ENV["JULIA_DEBUG"] = "AcademicClusters"
 
 @testset "runscript" begin
     script = abspath("testscript.jl")
@@ -13,8 +13,10 @@ ENV["JULIA_DEBUG"] = "USydClusters"
 
     # * From file
     rm(tempfile, force = true)
-    jobid, logfile = USydPhysics.runscript(script; ncpus = 1, mem = 1, walltime = 1,
-                                       args = [tempfile, key])
+    jobid, logfile = USydPhysics.runscript(
+        script; ncpus = 1, mem = 1, walltime = 1,
+        args = [tempfile, key]
+    )
 
     start_time = time()
     timeout = 30
@@ -107,8 +109,10 @@ end
 
 @testset "addproc" begin
     try
-        ourprocs = USydClusters.USydPhysics.addprocs(1; mem = 4, ncpus = 1, walltime = 1,
-                                                 queue = "h100")
+        ourprocs = AcademicClusters.USydPhysics.addprocs(
+            1; mem = 4, ncpus = 1, walltime = 1,
+            queue = "h100"
+        )
         @test ourprocs == [2]
         @test nprocs() == 2      # Total processes should be main (1) + new (1)
         @test workers() == [2]   # The list of worker IDs should match
@@ -143,8 +147,10 @@ end
 @testset "addprocs" begin
     try
         np = 2
-        ourprocs = USydClusters.USydPhysics.addprocs(np; mem = 4, ncpus = 1, walltime = 1,
-                                                 queue = `h100`)
+        ourprocs = AcademicClusters.USydPhysics.addprocs(
+            np; mem = 4, ncpus = 1, walltime = 1,
+            queue = `h100`
+        )
         @test nprocs() == np + 1      # Total processes should be main (1) + new (10)
         @test workers() == ourprocs   # The list of worker IDs should match
 

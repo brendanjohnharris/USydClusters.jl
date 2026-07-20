@@ -5,7 +5,7 @@
 
 A Julia package for running distributed work on academic compute clusters. It provides a `ClusterManager` that launches `Distributed.jl` workers, helpers for submitting scripts as batch (and array) jobs, and a scheduler that spreads workers across queues and shared machines according to live free capacity.
 
-Currently there is one site module, `USydPhysics`, which targets the University of Sydney School of Physics PBS Pro cluster and its shared lab machines.
+There are two site modules: `USydPhysics`, targeting the University of Sydney School of Physics PBS Pro cluster and its shared lab machines, and `NCIGadi`, targeting NCI's Gadi (batch submission only; see below).
 
 ## Installation
 
@@ -16,7 +16,7 @@ Pkg.add(url = "https://github.com/brendanjohnharris/AcademicClusters.jl")
 
 ## Requirements
 
-The package shells out to `ssh` and `qsub` rather than linking against a PBS library, so a few environmental things must hold:
+The package shells out to `ssh` and `qsub` rather than linking against a PBS library, so a few environmental things must hold (the ssh points apply to `USydPhysics`; `NCIGadi` submits locally):
 
 - **`ssh headnode` must work non-interactively** from wherever you run Julia, and `ssh <hpc>` likewise for the shared machines. Define these as `Host` aliases in `~/.ssh/config` with key-based auth.
 - **`~/.bashrc` must not print to stdout.** Job submission is parsed from the output of `ssh headnode "source ~/.bashrc && qsub ..."`; anything your shell profile echoes corrupts the job ID and raises an error saying so.
@@ -32,14 +32,15 @@ using Preferences, AcademicClusters
 set_preferences!(AcademicClusters, "logdir" => "/import/taiji1/user/.jobs")
 ```
 
-or with the environment variable `AcademicClusters_LOGDIR`. Resolution order is preference, then environment, then default.
+or with the environment variable `ACADEMICCLUSTERS_LOGDIR`. Resolution order is preference, then environment, then default.
 
 ## Usage
 
-The API lives in the `USydPhysics` submodule; `AcademicClusters` itself exports nothing.
+The API lives in the site submodules; `AcademicClusters` itself exports nothing.
 
 ```julia
-using AcademicClusters.USydPhysics
+using AcademicClusters.USydPhysics  # or
+using AcademicClusters.NCIGadi
 ```
 
 Note that `USydPhysics.addprocs` is a separate function from `Distributed.addprocs`, not a method of it. Loading both modules unqualified makes the bare name ambiguous and Julia will refuse to resolve it; either use `USydPhysics` alone (as above) and call `Distributed.addprocs` qualified, or import `USydPhysics` qualified and call `USydPhysics.addprocs`.
@@ -123,9 +124,58 @@ jobid = runscripts("/path/to/scripts")  # a directory of 1.jl, 2.jl, ...
 
 For the directory form, only files named `<integer>.jl` are counted, so stray files are ignored; the array is sized to that count.
 
-Defaults for both are `ncpus = 10`, `mem = 31`, `walltime = 48`. `project`, `queue`, `qsubflags`, and `exeflags` are all accepted as `Cmd`s.
+Defaults for both are `ncpus = 10`, `mem = 31`, `walltime = 48`. `project`, `queue`, `qsubflags`, and `exeflags` are all accepted as `Cmd`s; `project` defaults to the active project's directory (in both `USydPhysics` and `NCIGadi`).
 
 `selfdestruct()` qdels the current job from inside it, for a job that has decided it is done.
+
+### NCI Gadi
+
+`NCIGadi` provides `runscript` and `runscripts` for NCI's Gadi. Gadi's compute nodes cannot be reached for the `Distributed.jl` handshake, so there is no `addprocs` or `distributeprocs`; batch submission is the whole interface. Jobs are submitted from Gadi itself (a login node), calling `qsub` directly with no ssh hop.
+
+```julia
+using AcademicClusters.NCIGadi
+
+jobid, logfile = runscript("myscript.jl"; ncpus = 12, mem = 47, walltime = 24)
+jobs = runscripts([:(compute($i)) for i in 1:100]; ncpus = 1, mem = 4)
+```
+
+Three settings are read via preferences or environment variables, alongside the shared `logdir`:
+
+| Preference | Environment variable | Default | Used for |
+|---|---|---|---|
+| `gadi_project` | `ACADEMICCLUSTERS_GADI_PROJECT` | none (**required**) | `#PBS -P`, the NCI project charged |
+| `gadi_storage` | `ACADEMICCLUSTERS_GADI_STORAGE` | unset (line omitted) | `#PBS -l storage=`, e.g. `gdata/ab12+scratch/ab12`; without it jobs cannot see `/g/data` or `/scratch` |
+| `gadi_queue` | `ACADEMICCLUSTERS_GADI_QUEUE` | `normal` | `#PBS -q` |
+
+```julia
+using Preferences, AcademicClusters
+set_preferences!(AcademicClusters, "gadi_project" => "ab12",
+    "gadi_storage" => "gdata/ab12+scratch/ab12")
+```
+
+Each is overridable per call with the `project_code`, `storage`, and `queue` keywords. Resource defaults resolve per queue through `gadi_defaults(queue)`, built from the [NCI queue limits](https://opus.nci.org.au/display/Help/Queue+Limits): the GPU queues default to one GPU and its mandated core count (12 cpus per V100 on `gpuvolta`, 16 per A100 on `dgxa100`, passed as `-l ngpus`), CPU queues to a quarter node, with memory the proportional node share rounded down so the SU charge follows `ncpus`; walltime defaults to the queue's small-job cap (48 hours, or 24 on the express queues). `jobfs` (node-local scratch) is a flat 10GB: it does not affect the SU charge but does constrain placement, so requesting more than needed only makes jobs harder to schedule; raise it for I/O-heavy work (the PBS default is a stingy 100MB).
+
+```julia
+gadi_defaults("normal")    # (ncpus = 12, mem = 47, jobfs = 10, ngpus = 0, walltime = 48)
+gadi_defaults("gpuvolta")  # (ncpus = 12, mem = 95, jobfs = 10, ngpus = 1, walltime = 48)
+jobid, logfile = runscript("train.jl"; queue = "gpuvolta")  # 1 GPU, 12 cpus, 95GB
+```
+
+Unknown queues warn and fall back to the `normal` defaults; any of `ncpus`, `mem`, `walltime`, `jobfs`, and `ngpus` can be overridden individually.
+
+Expressions interpolate values with `$`, so a parameter sweep is a comprehension; the `setup` keyword prepends a shared block to every expression, holding the activation and `using` boilerplate each job would otherwise repeat:
+
+```julia
+exprs = [:(main($a, $b)) for (a, b) in Iterators.product(0.1:0.1:1, 1:20)] |> vec
+jobs = runscripts(exprs; setup = quote
+    using DrWatson
+    @quickactivate :MyPackage
+end)
+```
+
+Interpolate only small literals (numbers, strings, paths): expressions are written to script files as text, so a large interpolated object is serialized as its printed form, or not at all. Pass paths, not data; save inputs to a JLD2 file first and interpolate the filename.
+
+Gadi rejects PBS job arrays, so `runscripts` submits each script as an independent job and returns a vector of `(jobid, logfile)` pairs; each job is separately scheduled, backfills on its own, and can be `qdel`ed individually. This suits tens-to-hundreds of jobs; for thousands of short tasks, pack them with NCI's `nci-parallel` instead. Job scripts omit `#PBS -V` (discouraged on Gadi) and instead `source ~/.bashrc`, which must put `julia` on the `PATH` (e.g. via juliaup) without printing to stdout.
 
 ## Resource specifications
 
@@ -163,4 +213,4 @@ using Pkg
 Pkg.test("AcademicClusters")
 ```
 
-The suite splits in two. The unit tests cover resource parsing, capacity probing, and worker allocation against recorded fixtures of real `pbsnodes` and `qstat` output, and need no cluster. The integration tests submit real jobs and only make sense on a `physics.usyd.edu.au` host. `runtests.jl` gates both behind that host check.
+The suite splits in two. The unit tests cover resource parsing, capacity probing, worker allocation against recorded fixtures of real `pbsnodes` and `qstat` output, and Gadi script generation, and need no cluster. The integration tests submit real jobs and are gated by hostname: `physics.usyd.edu.au` for `USydPhysics`, `gadi` for `NCIGadi`.

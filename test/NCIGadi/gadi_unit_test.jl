@@ -43,6 +43,10 @@ end
         (; ncpus = 16, mem = 250, jobfs = 10, ngpus = 1, walltime = 48)
     @test gadi_defaults("copyq") ==
         (; ncpus = 1, mem = 16, jobfs = 10, ngpus = 0, walltime = 10)
+    @test gadi_defaults("gpuhopper") ==
+        (; ncpus = 12, mem = 256, jobfs = 10, ngpus = 1, walltime = 48)
+    @test gadi_defaults("megamembw") ==
+        (; ncpus = 32, mem = 1500, jobfs = 10, ngpus = 0, walltime = 48) # min request is half a node
     @test gadi_defaults("hugemem").mem == 367
     @test gadi_defaults("express").walltime == 24
     @test gadi_defaults("Express").walltime == 24 # case-insensitive

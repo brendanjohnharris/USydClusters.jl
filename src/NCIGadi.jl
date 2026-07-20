@@ -22,8 +22,9 @@ function gadi_project()
 end
 
 # Per-node shapes and small-job walltime caps (h), from the NCI queue limits:
-# https://opus.nci.org.au/display/Help/Queue+Limits
+# https://opus.nci.org.au/spaces/Help/pages/236881198/Queue+Limits
 # normalbw nodes are 128GB or 256GB; the conservative 128GB figure is used.
+# minncpus marks queues whose smallest allowed request exceeds a quarter node.
 const GADI_QUEUES = Dict(
     "normal" => (cores = 48, mem = 190, gpus = 0, walltime = 48),
     "express" => (cores = 48, mem = 190, gpus = 0, walltime = 24),
@@ -31,12 +32,13 @@ const GADI_QUEUES = Dict(
     "megamem" => (cores = 48, mem = 2990, gpus = 0, walltime = 48),
     "gpuvolta" => (cores = 48, mem = 382, gpus = 4, walltime = 48),
     "dgxa100" => (cores = 128, mem = 2000, gpus = 8, walltime = 48),
+    "gpuhopper" => (cores = 48, mem = 1024, gpus = 4, walltime = 48),
     "normalsr" => (cores = 104, mem = 500, gpus = 0, walltime = 48),
     "expresssr" => (cores = 104, mem = 500, gpus = 0, walltime = 24),
     "normalbw" => (cores = 28, mem = 128, gpus = 0, walltime = 48),
     "expressbw" => (cores = 28, mem = 128, gpus = 0, walltime = 24),
     "hugemembw" => (cores = 28, mem = 1020, gpus = 0, walltime = 48),
-    "megamembw" => (cores = 32, mem = 3000, gpus = 0, walltime = 48),
+    "megamembw" => (cores = 64, mem = 3000, gpus = 0, walltime = 48, minncpus = 32),
     "normalsl" => (cores = 32, mem = 192, gpus = 0, walltime = 48),
 )
 
@@ -45,9 +47,10 @@ const GADI_QUEUES = Dict(
 
 Resolve per-queue submission defaults `(; ncpus, mem, jobfs, ngpus, walltime)`
 from the Gadi queue shapes in `GADI_QUEUES`. GPU queues default to one GPU and
-its mandated core count (12 cpus per V100 on gpuvolta, 16 per A100 on dgxa100);
-CPU queues default to a quarter node, with memory the proportional node share
-rounded down so the SU charge follows `ncpus`. Walltime is the queue's
+its mandated core count (12 cpus per V100 on gpuvolta, 16 per A100 on dgxa100,
+12 per H200 on gpuhopper); CPU queues default to a quarter node, raised to the
+queue's minimum request where larger (megamembw), with memory the proportional
+node share rounded down so the SU charge follows `ncpus`. Walltime is the queue's
 small-job cap (48 hours; 24 on the express queues). `jobfs` is a flat 10GB on
 every queue: node-local disk does not affect the SU charge but does constrain
 where a job can be placed, so proportional requests would only make jobs harder
@@ -72,7 +75,8 @@ function gadi_defaults(queue::AbstractString)
         spec = GADI_QUEUES["normal"]
     end
     ngpus = spec.gpus > 0 ? 1 : 0
-    ncpus = ngpus > 0 ? spec.cores ÷ spec.gpus : max(1, spec.cores ÷ 4)
+    ncpus = ngpus > 0 ? spec.cores ÷ spec.gpus :
+        max(1, spec.cores ÷ 4, get(spec, :minncpus, 1))
     return (;
         ncpus,
         mem = max(1, floor(Int, spec.mem * ncpus / spec.cores)),
@@ -123,7 +127,7 @@ Submit a Julia script as a PBS job on Gadi.
 - `mem::Union{Real,String}`: Memory (number as GB or string with units)
 - `walltime::Union{Integer,String}`: Walltime (hours or "HH:MM:SS")
 - `jobfs::Union{Real,String}`: Node-local scratch (the PBS default is 100MB)
-- `ngpus::Integer`: GPUs; gpuvolta requires 12 cpus per GPU, dgxa100 16
+- `ngpus::Integer`: GPUs; gpuvolta and gpuhopper require 12 cpus per GPU, dgxa100 16
 - `project_code::String`: NCI project for `#PBS -P`; defaults to the `gadi_project` preference (required)
 - `storage::String`: `#PBS -l storage=` declaration (e.g. "gdata/ab12+scratch/ab12"); defaults to the `gadi_storage` preference. Without it the job cannot see /g/data or /scratch.
 - `qsubflags::Cmd=```: Additional qsub flags

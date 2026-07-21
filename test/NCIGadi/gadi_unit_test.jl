@@ -2,6 +2,7 @@ using AcademicClusters
 import AcademicClusters: NCIGadi
 import AcademicClusters.NCIGadi: gadi_defaults
 import Preferences
+using Distributed
 using Test
 
 # Off-cluster unit tests: script generation and preference plumbing only.
@@ -131,6 +132,38 @@ end
         withenv("ACADEMICCLUSTERS_GADI_PROJECT" => "ab12") do
             @test_throws Base.IOError NCIGadi.runscript("dummy.jl"; queue = "gpuvolta")
         end
+    end
+end
+
+@testset "distributeprocs splitting" begin
+    lines = ["gadi-cpu-clx-2234", "gadi-cpu-clx-2234", "gadi-cpu-clx-2235",
+        "gadi-cpu-clx-2235", ""]
+    @test NCIGadi.nodefile_hosts(lines) == ["gadi-cpu-clx-2234", "gadi-cpu-clx-2235"]
+    @test NCIGadi.even_split(4, ["a", "b"]) == ["a" => 2, "b" => 2]
+    @test NCIGadi.even_split(10, ["a", "b", "c"]) == ["a" => 4, "b" => 3, "c" => 3]
+    @test NCIGadi.even_split(1, ["a", "b"]) == ["a" => 1, "b" => 0]
+    # PBS_NCPUS outranks the line count (robust to mpiprocs != ncpus selects)
+    withenv("PBS_NCPUS" => "96") do
+        @test NCIGadi.job_slots(["a", "b"]) == 96
+    end
+    withenv("PBS_NCPUS" => nothing) do
+        @test NCIGadi.job_slots(["a", "a", "b", ""]) == 3 # per-rank fallback
+    end
+    withenv("PBS_NODEFILE" => nothing) do
+        @test_throws ErrorException NCIGadi.distributeprocs(2)
+    end
+end
+
+@testset "distributeprocs local spawn" begin
+    # Single-host nodefile naming this machine exercises the LocalManager path
+    nodefile = tempname()
+    write(nodefile, join(fill(first(split(gethostname(), '.')), 2), '\n'))
+    withenv("PBS_NODEFILE" => nodefile) do
+        procs = @test_logs (:info, r"allocation") match_mode = :any NCIGadi.distributeprocs(2)
+        @test length(procs) == 2
+        @test remotecall_fetch(() -> ENV["OPENBLAS_NUM_THREADS"], first(procs)) == "1"
+        @test remotecall_fetch(Threads.nthreads, first(procs)) == 1
+        rmprocs(procs)
     end
 end
 

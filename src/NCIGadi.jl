@@ -1,13 +1,15 @@
 module NCIGadi
+import Distributed
 import AcademicClusters: pref_or_env, build_julia_command, LOGDIR, to_string,
     parse_memory, parse_walltime, memory_string_to_gb, with_heap_hint,
     capture_jobid, write_exprs, combine_exprs, next_runscripts_id,
     default_project
 
-export runscript, runscripts, selfdestruct, gadi_defaults
+export runscript, runscripts, selfdestruct, gadi_defaults, distributeprocs
 
-# No addprocs/ClusterManager here: Gadi compute nodes cannot be reached for the
-# Distributed handshake, so only batch submission is supported.
+# No qsub-launching ClusterManager here: Gadi compute nodes cannot be reached
+# from outside for the Distributed handshake, so only batch submission is
+# supported. Within a running job, `distributeprocs` spans the allocated nodes.
 
 function gadi_project()
     project = pref_or_env("gadi_project")
@@ -327,6 +329,103 @@ function runscripts(scriptdir::String; kwargs...)
     isempty(files) && throw(ArgumentError("No scripts found in directory: $scriptdir"))
     sort!(files; by = f -> parse(Int, first(splitext(f))))
     return map(f -> runscript(joinpath(scriptdir, f); kwargs...), files)
+end
+
+# ===========================
+# Distributed within a job
+# ===========================
+
+# Unique hosts of a PBS nodefile in order (launch node first); hosts repeat
+# per mpiprocs rank, so dedup
+function nodefile_hosts(lines)
+    hosts = String[]
+    for l in lines
+        h = strip(l)
+        (isempty(h) || h in hosts) || push!(hosts, String(h))
+    end
+    return hosts
+end
+
+# Allocated cpus: PBS_NCPUS on Gadi; nodefile lines otherwise (per-rank listing)
+function job_slots(lines)
+    return something(
+        tryparse(Int, get(ENV, "PBS_NCPUS", "")),
+        count(!isempty ∘ strip, lines)
+    )
+end
+
+# np workers over hosts, differing by at most one; earlier hosts take the remainder
+function even_split(np, hosts)
+    n = length(hosts)
+    return [h => np ÷ n + (i <= np % n) for (i, h) in enumerate(hosts)]
+end
+
+"""
+    distributeprocs(np = ncpus ÷ threads; threads = 1, kwargs...) -> Vector{Int}
+
+Launch `np` workers spread evenly across the nodes of the current PBS job, read
+from `\$PBS_NODEFILE`. Bare `Distributed.addprocs(n)` puts every worker on the
+launch node, oversubscribing it while the job's other nodes sit idle; here
+workers on the launch node start locally and remote nodes are reached over the
+job's intra-job ssh access. Each worker runs `threads` Julia threads with
+`OPENBLAS_NUM_THREADS` to match (OpenBLAS otherwise starts a thread per node
+core in every worker), so the default fills the allocation with one
+single-threaded worker per allocated cpu.
+
+# Arguments
+- `np`: Total workers; defaults to allocated cpus ÷ `threads`
+- `threads::Integer=1`: Julia (and OpenBLAS) threads per worker
+- `project=dirname(Base.active_project())`: Project directory for workers
+- `sshflags::Cmd`: Flags for the ssh launch onto remote nodes
+- `kwargs...`: Forwarded to `Distributed.addprocs`
+
+# Examples
+```julia
+procs = distributeprocs()              # one single-threaded worker per cpu
+procs = distributeprocs(24)            # 24 workers, spread evenly
+procs = distributeprocs(; threads = 4) # 4-threaded workers, cpus ÷ 4 of them
+```
+"""
+function distributeprocs(
+        np::Union{Integer, Nothing} = nothing;
+        threads::Integer = 1,
+        project = dirname(Base.active_project()),
+        sshflags::Cmd = `-o StrictHostKeyChecking=accept-new`,
+        kwargs...
+    )
+    haskey(ENV, "PBS_NODEFILE") ||
+        error("PBS_NODEFILE is not set; distributeprocs must run inside a PBS job")
+    lines = readlines(ENV["PBS_NODEFILE"])
+    hosts = nodefile_hosts(lines)
+    isempty(hosts) && error("No hosts found in $(ENV["PBS_NODEFILE"])")
+    slots = job_slots(lines)
+    np = something(np, max(1, slots ÷ threads))
+    np > 0 || throw(ArgumentError("np must be positive, got $np"))
+    np * threads > slots &&
+        @warn "$np workers x $threads threads exceeds the $slots allocated cpus"
+
+    alloc = even_split(np, hosts)
+    @info "distributeprocs allocation" alloc
+
+    exename = joinpath(Sys.BINDIR, "julia") # shared filesystem: same binary everywhere
+    exeflags = `--project=$(project) -t $(threads)`
+    env = ["OPENBLAS_NUM_THREADS" => string(threads)]
+    me = first(split(gethostname(), '.')) # nodefile uses short hostnames
+    procs = Int[]
+    for (h, n) in alloc
+        n > 0 || continue
+        new = if h == me
+            # restrict=false: workers must be reachable from the other nodes
+            Distributed.addprocs(n; restrict = false, exeflags, env, kwargs...)
+        else
+            Distributed.addprocs(
+                [(h, n)]; exename, exeflags, env, sshflags, dir = pwd(),
+                kwargs...
+            )
+        end
+        append!(procs, new)
+    end
+    return procs
 end
 
 """

@@ -36,22 +36,68 @@ end
 
 @testset "gadi_defaults" begin
     @test gadi_defaults("normal") ==
-        (; ncpus = 12, mem = 47, jobfs = 10, ngpus = 0, walltime = 48)
+        (; ncpus = 12, mem = 47, jobfs = 10, ngpus = 0, walltime = 12)
     @test gadi_defaults("gpuvolta") ==
-        (; ncpus = 12, mem = 95, jobfs = 10, ngpus = 1, walltime = 48)
+        (; ncpus = 12, mem = 95, jobfs = 10, ngpus = 1, walltime = 12)
     @test gadi_defaults("dgxa100") ==
-        (; ncpus = 16, mem = 250, jobfs = 10, ngpus = 1, walltime = 48)
+        (; ncpus = 16, mem = 250, jobfs = 10, ngpus = 1, walltime = 12)
     @test gadi_defaults("copyq") ==
-        (; ncpus = 1, mem = 16, jobfs = 10, ngpus = 0, walltime = 10)
+        (; ncpus = 1, mem = 16, jobfs = 10, ngpus = 0, walltime = 2)
     @test gadi_defaults("gpuhopper") ==
-        (; ncpus = 12, mem = 256, jobfs = 10, ngpus = 1, walltime = 48)
+        (; ncpus = 12, mem = 256, jobfs = 10, ngpus = 1, walltime = 12)
     @test gadi_defaults("megamembw") ==
-        (; ncpus = 32, mem = 1500, jobfs = 10, ngpus = 0, walltime = 48) # min request is half a node
+        (; ncpus = 32, mem = 1500, jobfs = 10, ngpus = 0, walltime = 12) # min request is half a node
     @test gadi_defaults("hugemem").mem == 367
-    @test gadi_defaults("express").walltime == 24
-    @test gadi_defaults("Express").walltime == 24 # case-insensitive
+    @test gadi_defaults("express").walltime == 6 # a quarter of the 24h cap
+    @test gadi_defaults("Express").walltime == 6 # case-insensitive
     unknown = @test_logs (:warn, r"Unknown Gadi queue") gadi_defaults("nonexistent")
     @test unknown == gadi_defaults("normal")
+end
+
+@testset "SU-neutral completion" begin
+    # ncpus given: memory fills to that share, charge stays at ncpus
+    @test gadi_defaults("normal"; ncpus = 4).mem == 15 # floor(4 * 190/48)
+    @test gadi_defaults("normal"; ncpus = 4).ncpus == 4
+    # mem given: cores fill to what the memory share pays for
+    @test gadi_defaults("hugemem"; mem = 300).ncpus == 9 # floor(300/1470 * 48)
+    @test gadi_defaults("hugemem"; mem = 300).mem == 300
+    @test gadi_defaults("normal"; mem = "100GB").ncpus == 25
+    @test gadi_defaults("normal"; mem = "100GB").mem == "100GB" # units preserved
+    # beyond one node's memory: whole nodes
+    @test gadi_defaults("normal"; mem = 300).ncpus == 96
+    # queue minimum still enforced on derived cores
+    @test gadi_defaults("megamembw"; mem = 500).ncpus == 32
+    # GPU queues: ngpus drives both; either other resource fills the GPU count
+    @test gadi_defaults("gpuvolta"; ngpus = 2) ==
+        (; ncpus = 24, mem = 191, jobfs = 10, ngpus = 2, walltime = 12)
+    @test gadi_defaults("gpuvolta"; ncpus = 24).ngpus == 2
+    @test gadi_defaults("gpuvolta"; mem = 300).ngpus == 3 # floor(300/382 * 4)
+    @test gadi_defaults("gpuvolta"; mem = 300).ncpus == 36
+    # explicit fields are never altered
+    @test gadi_defaults("normal"; ncpus = 4, mem = 100) ==
+        (; ncpus = 4, mem = 100, jobfs = 10, ngpus = 0, walltime = 12)
+end
+
+@testset "walltime fraction" begin
+    # A set preference outranks the environment, so only assert env behaviour when unset
+    if isnothing(Preferences.load_preference(AcademicClusters, "gadi_maxwalltime_fraction"))
+        withenv("ACADEMICCLUSTERS_GADI_MAXWALLTIME_FRACTION" => nothing) do
+            @test gadi_defaults("normal").walltime == 12 # default 1/4 of the 48h cap
+        end
+        withenv("ACADEMICCLUSTERS_GADI_MAXWALLTIME_FRACTION" => "1") do
+            @test gadi_defaults("normal").walltime == 48
+        end
+        withenv("ACADEMICCLUSTERS_GADI_MAXWALLTIME_FRACTION" => "1/2") do
+            @test gadi_defaults("normal").walltime == 24
+            @test gadi_defaults("copyq").walltime == 5
+        end
+        withenv("ACADEMICCLUSTERS_GADI_MAXWALLTIME_FRACTION" => "0.125") do
+            @test gadi_defaults("normal").walltime == 6
+        end
+        withenv("ACADEMICCLUSTERS_GADI_MAXWALLTIME_FRACTION" => "2") do
+            @test_throws ArgumentError gadi_defaults("normal")
+        end
+    end
 end
 
 @testset "default_project" begin

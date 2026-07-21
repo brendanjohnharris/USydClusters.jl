@@ -1,7 +1,8 @@
 module NCIGadi
 import AcademicClusters: pref_or_env, build_julia_command, LOGDIR, to_string,
-    parse_memory, parse_walltime, with_heap_hint, capture_jobid, write_exprs,
-    combine_exprs, next_runscripts_id, default_project
+    parse_memory, parse_walltime, memory_string_to_gb, with_heap_hint,
+    capture_jobid, write_exprs, combine_exprs, next_runscripts_id,
+    default_project
 
 export runscript, runscripts, selfdestruct, gadi_defaults
 
@@ -20,6 +21,25 @@ function gadi_project()
     )
     return project
 end
+
+# Default walltime = queue cap x this fraction; shorter requests backfill sooner
+# and cost nothing extra (SUs charge actual runtime, not the request)
+function walltime_fraction()
+    frac = pref_or_env("gadi_maxwalltime_fraction", 1 / 4)
+    if frac isa AbstractString # env form; accept "0.25" or "1/4"
+        frac = if occursin('/', frac)
+            n, d = parse.(Float64, split(frac, '/', limit = 2))
+            n / d
+        else
+            parse(Float64, frac)
+        end
+    end
+    0 < frac <= 1 ||
+        throw(ArgumentError("gadi_maxwalltime_fraction must be in (0, 1], got $frac"))
+    return frac
+end
+
+default_walltime(cap) = max(1, floor(Int, cap * walltime_fraction())) # whole hours
 
 # Per-node shapes and small-job walltime caps (h), from the NCI queue limits:
 # https://opus.nci.org.au/spaces/Help/pages/236881198/Queue+Limits
@@ -43,47 +63,90 @@ const GADI_QUEUES = Dict(
 )
 
 """
-    gadi_defaults(queue) -> NamedTuple
+    gadi_defaults(queue; ncpus = nothing, mem = nothing, ngpus = nothing) -> NamedTuple
 
-Resolve per-queue submission defaults `(; ncpus, mem, jobfs, ngpus, walltime)`
-from the Gadi queue shapes in `GADI_QUEUES`. GPU queues default to one GPU and
-its mandated core count (12 cpus per V100 on gpuvolta, 16 per A100 on dgxa100,
-12 per H200 on gpuhopper); CPU queues default to a quarter node, raised to the
-queue's minimum request where larger (megamembw), with memory the proportional
-node share rounded down so the SU charge follows `ncpus`. Walltime is the queue's
-small-job cap (48 hours; 24 on the express queues). `jobfs` is a flat 10GB on
-every queue: node-local disk does not affect the SU charge but does constrain
-where a job can be placed, so proportional requests would only make jobs harder
-to schedule; raise it for I/O-heavy work.
+Resolve submission defaults `(; ncpus, mem, jobfs, ngpus, walltime)` for a Gadi
+queue, completing any partial request SU-neutrally. Gadi charges
+`walltime x rate x max(ncpus, mem / node_mem x node_cores)`, so:
+
+- Nothing given: GPU queues get one GPU and its mandated core count (12 cpus
+  per V100 on gpuvolta, 16 per A100 on dgxa100, 12 per H200 on gpuhopper); CPU
+  queues a quarter node, raised to the queue's minimum request where larger
+  (megamembw). Memory is the proportional node share rounded down, so the
+  charge follows `ncpus`.
+- `ncpus` (or `ngpus`) given: memory fills to the proportional share of those
+  cores, keeping the charge at `ncpus`.
+- `mem` given: cores fill to those the memory share already pays for, and a
+  request beyond one node's memory rounds `ncpus` up to whole nodes. On GPU
+  queues the GPU count fills the same way.
+- Explicitly given fields are never altered.
+
+Walltime defaults to the `gadi_maxwalltime_fraction` preference (env
+`ACADEMICCLUSTERS_GADI_MAXWALLTIME_FRACTION`, accepting "0.25" or "1/4" forms;
+default 1/4) of the queue's small-job cap, floored to whole hours: 12 of 48 on
+`normal`, 6 of 24 on the express queues. Shorter requests backfill sooner and
+SUs charge actual runtime, so the cap is rarely worth requesting up front.
+`jobfs` is a flat 10GB on every queue: node-local disk does not affect the SU
+charge but does constrain where a job can be placed, so proportional requests
+would only make jobs harder to schedule; raise it for I/O-heavy work.
 
 Unknown queues warn and fall back to the `normal` defaults.
 
 # Examples
 ```julia
-gadi_defaults("normal")    # (ncpus = 12, mem = 47, jobfs = 10, ngpus = 0, walltime = 48)
-gadi_defaults("gpuvolta")  # (ncpus = 12, mem = 95, jobfs = 10, ngpus = 1, walltime = 48)
-gadi_defaults("dgxa100")   # (ncpus = 16, mem = 250, jobfs = 10, ngpus = 1, walltime = 48)
+gadi_defaults("normal")             # (ncpus = 12, mem = 47, jobfs = 10, ngpus = 0, walltime = 12)
+gadi_defaults("normal"; ncpus = 4)  # (ncpus = 4, mem = 15, ...): not the quarter-node 47GB
+gadi_defaults("hugemem"; mem = 300) # (ncpus = 9, mem = 300, ...): the cores 300GB already pays for
+gadi_defaults("gpuvolta"; ngpus = 2) # (ncpus = 24, mem = 191, ngpus = 2, ...)
 ```
 """
-function gadi_defaults(queue::AbstractString)
+function gadi_defaults(
+        queue::AbstractString;
+        ncpus::Union{Integer, Nothing} = nothing,
+        mem::Union{Real, AbstractString, Nothing} = nothing,
+        ngpus::Union{Integer, Nothing} = nothing
+    )
     queue = lowercase(queue)
+    mem_gb = isnothing(mem) ? nothing : memory_string_to_gb(parse_memory(mem))
     # copyq is shaped unlike the compute queues (1 core, data-mover nodes)
-    queue == "copyq" && return (; ncpus = 1, mem = 16, jobfs = 10, ngpus = 0, walltime = 10)
+    if queue == "copyq"
+        return (;
+            ncpus = something(ncpus, 1), mem = something(mem, 16),
+            jobfs = 10, ngpus = 0, walltime = default_walltime(10),
+        )
+    end
     spec = get(GADI_QUEUES, queue, nothing)
     if isnothing(spec)
         @warn "Unknown Gadi queue '$queue'; using normal-queue defaults"
         spec = GADI_QUEUES["normal"]
     end
-    ngpus = spec.gpus > 0 ? 1 : 0
-    ncpus = ngpus > 0 ? spec.cores ÷ spec.gpus :
-        max(1, spec.cores ÷ 4, get(spec, :minncpus, 1))
-    return (;
-        ncpus,
-        mem = max(1, floor(Int, spec.mem * ncpus / spec.cores)),
-        jobfs = 10,
-        ngpus,
-        walltime = spec.walltime,
-    )
+    if spec.gpus > 0
+        ratio = spec.cores ÷ spec.gpus # mandated cpus per GPU
+        if isnothing(ngpus)
+            ngpus = if !isnothing(ncpus)
+                max(1, ncpus ÷ ratio)
+            elseif !isnothing(mem_gb)
+                clamp(floor(Int, mem_gb / spec.mem * spec.gpus), 1, spec.gpus)
+            else
+                1
+            end
+        end
+        ncpus = something(ncpus, ratio * max(ngpus, 1))
+    else
+        ngpus = something(ngpus, 0)
+        if isnothing(ncpus)
+            ncpus = if isnothing(mem_gb)
+                spec.cores ÷ 4
+            elseif mem_gb > spec.mem # beyond one node: whole nodes required
+                ceil(Int, mem_gb / spec.mem) * spec.cores
+            else
+                clamp(floor(Int, mem_gb / spec.mem * spec.cores), 1, spec.cores)
+            end
+            ncpus = max(ncpus, get(spec, :minncpus, 1))
+        end
+    end
+    mem = something(mem, max(1, floor(Int, spec.mem * ncpus / spec.cores)))
+    return (; ncpus, mem, jobfs = 10, ngpus, walltime = default_walltime(spec.walltime))
 end
 
 """
@@ -122,12 +185,14 @@ Submit a Julia script as a PBS job on Gadi.
 # Arguments
 - `script::String`: Path to Julia script file
 - `queue::String`: PBS queue; defaults to the `gadi_queue` preference, then "normal"
-- `defaults::NamedTuple=gadi_defaults(queue)`: Per-queue resource defaults
 - `ncpus::Integer`: Number of CPUs
 - `mem::Union{Real,String}`: Memory (number as GB or string with units)
+- `ngpus::Integer`: GPUs; gpuvolta and gpuhopper require 12 cpus per GPU, dgxa100 16
+- `defaults::NamedTuple=gadi_defaults(queue; ncpus, mem, ngpus)`: Resolved
+  resources; unspecified members of `ncpus`/`mem`/`ngpus` are completed
+  SU-neutrally from the queue shape (see `gadi_defaults`)
 - `walltime::Union{Integer,String}`: Walltime (hours or "HH:MM:SS")
 - `jobfs::Union{Real,String}`: Node-local scratch (the PBS default is 100MB)
-- `ngpus::Integer`: GPUs; gpuvolta and gpuhopper require 12 cpus per GPU, dgxa100 16
 - `project_code::String`: NCI project for `#PBS -P`; defaults to the `gadi_project` preference (required)
 - `storage::String`: `#PBS -l storage=` declaration (e.g. "gdata/ab12+scratch/ab12"); defaults to the `gadi_storage` preference. Without it the job cannot see /g/data or /scratch.
 - `qsubflags::Cmd=```: Additional qsub flags
@@ -139,24 +204,27 @@ Submit a Julia script as a PBS job on Gadi.
 
 Resource defaults resolve per queue through `gadi_defaults`: one GPU on the GPU
 queues, a quarter node otherwise, with memory just under the proportional share
-so the SU charge follows `ncpus`, and walltime at the queue cap.
+so the SU charge follows `ncpus`, and walltime at the queue cap. Partial
+requests complete SU-neutrally: given only `ncpus`, memory fills to that many
+cores' share; given only `mem`, cores fill to those the memory already pays for.
 
 # Examples
 ```julia
 jobid, logfile = runscript("myscript.jl"; mem=64, walltime=12)
 jobid, logfile = runscript("myscript.jl"; queue="express", storage="gdata/ab12")
 jobid, logfile = runscript("train.jl"; queue="gpuvolta")  # 1 GPU, 12 cpus, 95GB
+jobid, logfile = runscript("myscript.jl"; ncpus=4)        # 4 cpus, 15GB, not 47GB
 ```
 """
 function runscript(
         script::String;
         queue::AbstractString = pref_or_env("gadi_queue", "normal"),
-        defaults::NamedTuple = gadi_defaults(queue),
-        ncpus::Integer = defaults.ncpus,
-        mem::Union{Real, AbstractString} = defaults.mem,
+        ncpus::Union{Integer, Nothing} = nothing,
+        mem::Union{Real, AbstractString, Nothing} = nothing,
+        ngpus::Union{Integer, Nothing} = nothing,
+        defaults::NamedTuple = gadi_defaults(queue; ncpus, mem, ngpus),
         walltime::Union{Integer, AbstractString} = defaults.walltime,
         jobfs::Union{Real, AbstractString} = defaults.jobfs,
-        ngpus::Integer = defaults.ngpus,
         project_code::AbstractString = gadi_project(),
         storage::AbstractString = something(pref_or_env("gadi_storage"), ""),
         qsubflags::Cmd = ``,
@@ -164,7 +232,7 @@ function runscript(
         exeflags::Cmd = ``,
         kwargs...
     )
-    mem_str = parse_memory(mem)
+    mem_str = parse_memory(defaults.mem)
     walltime_str = parse_walltime(walltime)
     jobfs_str = parse_memory(jobfs)
 
@@ -174,8 +242,9 @@ function runscript(
 
     julia_cmd = build_julia_command(; exeflags, project, script, logfile, kwargs...)
     cmd = pbs_script(;
-        ID, julia_cmd, ncpus, mem = mem_str, walltime = walltime_str,
-        jobfs = jobfs_str, ngpus, queue, project_code, storage, project
+        ID, julia_cmd, ncpus = defaults.ncpus, mem = mem_str,
+        walltime = walltime_str, jobfs = jobfs_str, ngpus = defaults.ngpus,
+        queue, project_code, storage, project
     )
 
     qsub_file = first(mktemp(LOGDIR; cleanup = false))

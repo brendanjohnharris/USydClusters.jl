@@ -146,6 +146,7 @@ Three settings are read via preferences or environment variables, alongside the 
 | `gadi_project` | `ACADEMICCLUSTERS_GADI_PROJECT` | none (**required**) | `#PBS -P`, the NCI project charged |
 | `gadi_storage` | `ACADEMICCLUSTERS_GADI_STORAGE` | unset (line omitted) | `#PBS -l storage=`, e.g. `gdata/ab12+scratch/ab12`; without it jobs cannot see `/g/data` or `/scratch` |
 | `gadi_queue` | `ACADEMICCLUSTERS_GADI_QUEUE` | `normal` | `#PBS -q` |
+| `gadi_maxwalltime_fraction` | `ACADEMICCLUSTERS_GADI_MAXWALLTIME_FRACTION` | `1/4` | Fraction of the queue's walltime cap used as the default walltime; accepts `0.25` or `1/4` forms |
 
 ```julia
 using Preferences, AcademicClusters
@@ -153,15 +154,23 @@ set_preferences!(AcademicClusters, "gadi_project" => "ab12",
     "gadi_storage" => "gdata/ab12+scratch/ab12")
 ```
 
-Each is overridable per call with the `project_code`, `storage`, and `queue` keywords. Resource defaults resolve per queue through `gadi_defaults(queue)`, built from the [NCI queue limits](https://opus.nci.org.au/spaces/Help/pages/236881198/Queue+Limits): the GPU queues default to one GPU and its mandated core count (12 cpus per V100 on `gpuvolta`, 16 per A100 on `dgxa100`, 12 per H200 on `gpuhopper`, passed as `-l ngpus`), CPU queues to a quarter node (raised to the queue's minimum request where larger), with memory the proportional node share rounded down so the SU charge follows `ncpus`; walltime defaults to the queue's small-job cap (48 hours, or 24 on the express queues). `jobfs` (node-local scratch) is a flat 10GB: it does not affect the SU charge but does constrain placement, so requesting more than needed only makes jobs harder to schedule; raise it for I/O-heavy work (the PBS default is a stingy 100MB).
+Each is overridable per call with the `project_code`, `storage`, and `queue` keywords. Resource defaults resolve per queue through `gadi_defaults(queue)`, built from the [NCI queue limits](https://opus.nci.org.au/spaces/Help/pages/236881198/Queue+Limits): the GPU queues default to one GPU and its mandated core count (12 cpus per V100 on `gpuvolta`, 16 per A100 on `dgxa100`, 12 per H200 on `gpuhopper`, passed as `-l ngpus`), CPU queues to a quarter node (raised to the queue's minimum request where larger), with memory the proportional node share rounded down so the SU charge follows `ncpus`. Walltime defaults to `gadi_maxwalltime_fraction` (default a quarter) of the queue's small-job cap, floored to whole hours: 12 of 48 hours on `normal`, 6 of 24 on the express queues. Shorter requests backfill sooner and SUs charge actual runtime, not the request, so there is little reason to ask for the cap by default. `jobfs` (node-local scratch) is a flat 10GB: it does not affect the SU charge but does constrain placement, so requesting more than needed only makes jobs harder to schedule; raise it for I/O-heavy work (the PBS default is a stingy 100MB).
 
 ```julia
-gadi_defaults("normal")    # (ncpus = 12, mem = 47, jobfs = 10, ngpus = 0, walltime = 48)
-gadi_defaults("gpuvolta")  # (ncpus = 12, mem = 95, jobfs = 10, ngpus = 1, walltime = 48)
+gadi_defaults("normal")    # (ncpus = 12, mem = 47, jobfs = 10, ngpus = 0, walltime = 12)
+gadi_defaults("gpuvolta")  # (ncpus = 12, mem = 95, jobfs = 10, ngpus = 1, walltime = 12)
 jobid, logfile = runscript("train.jl"; queue = "gpuvolta")  # 1 GPU, 12 cpus, 95GB
 ```
 
 Unknown queues warn and fall back to the `normal` defaults; any of `ncpus`, `mem`, `walltime`, `jobfs`, and `ngpus` can be overridden individually.
+
+Partial resource requests complete SU-neutrally rather than falling back to the static defaults. The charge is `max(ncpus, mem-share)`, so given only `ncpus` the memory fills to that many cores' proportional share (keeping the charge at `ncpus`), and given only `mem` the cores fill to those the memory share already pays for; a memory request beyond one node rounds `ncpus` up to whole nodes, and on GPU queues the GPU count fills the same way. Explicit values are never altered.
+
+```julia
+gadi_defaults("normal"; ncpus = 4)   # (ncpus = 4, mem = 15, ...): not the quarter-node 47GB
+gadi_defaults("hugemem"; mem = 300)  # (ncpus = 9, mem = 300, ...): the cores 300GB already pays for
+gadi_defaults("gpuvolta"; mem = 300) # (ncpus = 36, ngpus = 3, ...): the GPUs that memory spans
+```
 
 Expressions interpolate values with `$`, so a parameter sweep is a comprehension; the `setup` keyword prepends a shared block to every expression, holding the activation and `using` boilerplate each job would otherwise repeat:
 

@@ -354,6 +354,8 @@ function job_slots(lines)
     )
 end
 
+shorthost(h) = String(first(split(h, '.'))) # nodefile FQDNs vs gethostname short forms
+
 # np workers over hosts, differing by at most one; earlier hosts take the remainder
 function even_split(np, hosts)
     n = length(hosts)
@@ -371,6 +373,15 @@ job's intra-job ssh access. Each worker runs `threads` Julia threads with
 `OPENBLAS_NUM_THREADS` to match (OpenBLAS otherwise starts a thread per node
 core in every worker), so the default fills the allocation with one
 single-threaded worker per allocated cpu.
+
+Gadi permits ssh only between nodes of a running job, authenticated by an
+ordinary key pair; since \$HOME is shared across nodes, a one-time
+
+    ssh-keygen -t ed25519 -N '' -f ~/.ssh/id_ed25519
+    cat ~/.ssh/id_ed25519.pub >> ~/.ssh/authorized_keys
+
+on Gadi enables the remote launches. Nodes that cannot be reached are warned
+about and skipped rather than aborting the job.
 
 # Arguments
 - `np`: Total workers; defaults to allocated cpus ÷ `threads`
@@ -410,18 +421,26 @@ function distributeprocs(
     exename = joinpath(Sys.BINDIR, "julia") # shared filesystem: same binary everywhere
     exeflags = `--project=$(project) -t $(threads)`
     env = ["OPENBLAS_NUM_THREADS" => string(threads)]
-    me = first(split(gethostname(), '.')) # nodefile uses short hostnames
+    me = shorthost(gethostname())
     procs = Int[]
     for (h, n) in alloc
         n > 0 || continue
-        new = if h == me
+        new = if shorthost(h) == me
             # restrict=false: workers must be reachable from the other nodes
             Distributed.addprocs(n; restrict = false, exeflags, env, kwargs...)
         else
-            Distributed.addprocs(
-                [(h, n)]; exename, exeflags, env, sshflags, dir = pwd(),
-                kwargs...
-            )
+            try
+                Distributed.addprocs(
+                    [(h, n)]; exename, exeflags, env, sshflags, dir = pwd(),
+                    kwargs...
+                )
+            catch e
+                @warn """Failed to launch workers on $h; its cores will sit idle.
+                Node-to-node ssh on Gadi needs a one-time passwordless key (\$HOME is shared):
+                    ssh-keygen -t ed25519 -N '' -f ~/.ssh/id_ed25519
+                    cat ~/.ssh/id_ed25519.pub >> ~/.ssh/authorized_keys""" exception = e
+                Int[]
+            end
         end
         append!(procs, new)
     end

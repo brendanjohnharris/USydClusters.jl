@@ -139,6 +139,8 @@ end
     lines = ["gadi-cpu-clx-2234", "gadi-cpu-clx-2234", "gadi-cpu-clx-2235",
         "gadi-cpu-clx-2235", ""]
     @test NCIGadi.nodefile_hosts(lines) == ["gadi-cpu-clx-2234", "gadi-cpu-clx-2235"]
+    @test NCIGadi.shorthost("gadi-cpu-clx-1866.gadi.nci.org.au") == "gadi-cpu-clx-1866"
+    @test NCIGadi.shorthost("gadi-cpu-clx-1866") == "gadi-cpu-clx-1866"
     @test NCIGadi.even_split(4, ["a", "b"]) == ["a" => 2, "b" => 2]
     @test NCIGadi.even_split(10, ["a", "b", "c"]) == ["a" => 4, "b" => 3, "c" => 3]
     @test NCIGadi.even_split(1, ["a", "b"]) == ["a" => 1, "b" => 0]
@@ -155,9 +157,11 @@ end
 end
 
 @testset "distributeprocs local spawn" begin
-    # Single-host nodefile naming this machine exercises the LocalManager path
+    # FQDN nodefile naming this machine: must match on short hostname and
+    # take the LocalManager path, not ssh to itself
     nodefile = tempname()
-    write(nodefile, join(fill(first(split(gethostname(), '.')), 2), '\n'))
+    me = first(split(gethostname(), '.')) * ".gadi.fake.domain"
+    write(nodefile, join(fill(me, 2), '\n'))
     withenv("PBS_NODEFILE" => nodefile) do
         procs = @test_logs (:info, r"allocation") match_mode = :any NCIGadi.distributeprocs(2)
         @test length(procs) == 2

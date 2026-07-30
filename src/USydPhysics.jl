@@ -21,12 +21,6 @@ Generate the command-line argument for starting a Julia worker process.
 """
 worker_arg() = `--worker=$(worker_cookie())`
 
-# ===========================
-# PBS Pro Manager
-# ===========================
-
-export PBSProManager, addprocs, runscript, runscripts, selfdestruct
-
 """
     PBSProManager <: ClusterManager
 
@@ -710,8 +704,6 @@ end
 # Heterogeneous distribution (PBS queues + shared HPCs)
 # ===========================
 
-export distributeprocs
-
 # PBS reports sizes like "63437mb", "58720256kb", "0b"
 function pbs_size_gb(s::AbstractString)
     m = match(r"^(\d+(?:\.\d+)?)([kmgt]?)b$"i, strip(s))
@@ -969,7 +961,7 @@ function allocate_workers(np, cluster, hpc, hpcratio)
 end
 
 """
-    distributeprocs(np; kwargs...) -> Vector{Int}
+    distributeprocs(np=Inf; kwargs...) -> Vector{Int}
 
 Launch `np` workers across the PBS queues and shared HPCs, split according to live
 free capacity. Cluster workers are submitted with enforced `ncpus`/`mem`/`walltime`;
@@ -998,7 +990,7 @@ procs = distributeprocs(Inf; ncpus = 2)      # fill 90% of everything
 ```
 """
 function distributeprocs(
-        np::Real;
+        np::Real = Inf;
         buffer::Real = 0.1,
         ncpus::Integer = 1,
         mem::Union{Real, AbstractString} = 4,

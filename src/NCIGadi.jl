@@ -5,8 +5,6 @@ import AcademicClusters: pref_or_env, build_julia_command, LOGDIR, to_string,
     capture_jobid, write_exprs, combine_exprs, next_runscripts_id,
     default_project
 
-export runscript, runscripts, selfdestruct, gadi_defaults, distributeprocs
-
 # No qsub-launching ClusterManager here: Gadi compute nodes cannot be reached
 # from outside for the Distributed handshake, so only batch submission is
 # supported. Within a running job, `distributeprocs` spans the allocated nodes.
